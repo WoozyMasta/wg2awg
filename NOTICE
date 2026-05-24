@@ -1,0 +1,30 @@
+Third-Party Notices
+===================
+
+This project includes third-party code with its own copyright and
+license notices.
+
+1) Curve25519 implementation
+----------------------------
+
+Files:
+* `src/curve25519.c`
+* `src/curve25519_fiat32.c`
+
+Provenance:
+* Derived from the WireGuard/Linux ecosystem implementation based on
+  HACL* and fiat-crypto generated Curve25519 code.
+* `src/curve25519_fiat32.c` is based on the Zinc/WireGuard 32-bit
+  fallback implementation (`curve25519-fiat32.c`).
+
+Upstream notice present in file:
+* SPDX-License-Identifier: GPL-2.0 OR MIT
+* Copyright (C) 2015-2016 The fiat-crypto Authors.
+* Copyright (C) 2016-2017 INRIA and Microsoft Corporation.
+* Copyright (C) 2018-2019 Jason A. Donenfeld <Jason@zx2c4.com>.
+
+License handling:
+* The original license header and copyright notices are preserved in
+  `src/curve25519.c` and `src/curve25519_fiat32.c`.
+* This project-level NOTICE does not replace or modify the license
+  terms stated in that file.

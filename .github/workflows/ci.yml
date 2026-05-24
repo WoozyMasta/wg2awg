@@ -1,0 +1,204 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run lint container
+        run: make container-lint
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            muslcc_tag: x86_64-linux-musl
+          - arch: arm64
+            platform: linux/arm64
+            muslcc_tag: aarch64-linux-musl
+          - arch: arm
+            platform: linux/arm/v7
+            muslcc_tag: arm-linux-musleabihf
+          - arch: armv5
+            platform: linux/arm/v5
+            muslcc_tag: arm-linux-musleabi
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Run test matrix target
+        run: |
+          make container-test-${{ matrix.arch }} \
+            CONTAINER_TEST_TARGET=test
+
+  release-gate:
+    if: github.ref_type == 'tag'
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc make
+
+      - name: Run hardening and stress tests
+        run: make test-hardening test-stress
+
+  build:
+    if: github.ref_type == 'tag'
+    needs: release-gate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            platform: linux/arm64
+            muslcc_tag: aarch64-linux-musl
+          - arch: arm
+            platform: linux/arm/v7
+            muslcc_tag: arm-linux-musleabihf
+          - arch: armv5
+            platform: linux/arm/v5
+            muslcc_tag: arm-linux-musleabi
+          - arch: amd64
+            platform: linux/amd64
+            muslcc_tag: x86_64-linux-musl
+          - arch: mips
+            platform: linux/mips
+            muslcc_tag: mips-linux-musl
+          - arch: mipsel
+            platform: linux/mipsle
+            muslcc_tag: mipsel-linux-musl
+          - arch: mips64le
+            platform: linux/mips64le
+            muslcc_tag: mips64el-linux-musl
+          - arch: ppc64le
+            platform: linux/ppc64le
+            muslcc_tag: powerpc64le-linux-musl
+          - arch: 386
+            platform: linux/386
+            muslcc_tag: i486-linux-musl
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build
+        run: |
+          mkdir -p build
+          bash build.sh \
+            "${{ matrix.platform }}" "${{ matrix.arch }}" "${{ matrix.muslcc_tag }}" "${{ github.ref_name }}" build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-${{ matrix.arch }}
+          path: build/
+          retention-days: 1
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: build/
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Push OCI images and create manifests
+        env:
+          VERSION: ${{ github.ref_name }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          DH_IMAGE: ${{ secrets.DOCKER_USERNAME }}/wg2awg
+        run: |
+          ARCHS="arm64 arm armv5 amd64 mips mipsel mips64le ppc64le 386"
+          GHCR_IMAGE="ghcr.io/${GHCR_OWNER,,}/wg2awg"
+          GHCR_AMENDS=""
+          DH_AMENDS=""
+
+          for arch in $ARCHS; do
+            archive="build/wg2awg-${arch}-oci.tar.gz"
+            skopeo copy \
+              "oci-archive:${archive}" \
+              "docker://${GHCR_IMAGE}:${VERSION}-${arch}"
+            skopeo copy \
+              "oci-archive:${archive}" \
+              "docker://${DH_IMAGE}:${VERSION}-${arch}"
+            GHCR_AMENDS="${GHCR_AMENDS} ${GHCR_IMAGE}:${VERSION}-${arch}"
+            DH_AMENDS="${DH_AMENDS} ${DH_IMAGE}:${VERSION}-${arch}"
+          done
+
+          docker buildx imagetools create -t "${GHCR_IMAGE}:${VERSION}" $GHCR_AMENDS
+          docker buildx imagetools create -t "${GHCR_IMAGE}:latest"    $GHCR_AMENDS
+          docker buildx imagetools create -t "${DH_IMAGE}:${VERSION}"  $DH_AMENDS
+          docker buildx imagetools create -t "${DH_IMAGE}:latest"      $DH_AMENDS
+
+      - name: Create GitHub release and upload binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          NOTES=$(make release-notes)
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "$NOTES" \
+            build/wg2awg-386 \
+            build/wg2awg-amd64 \
+            build/wg2awg-arm \
+            build/wg2awg-arm64 \
+            build/wg2awg-armv5 \
+            build/wg2awg-mips \
+            build/wg2awg-mips64le \
+            build/wg2awg-mipsel \
+            build/wg2awg-ppc64le
+
+      - name: Upload OCI archives to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release upload "$VERSION" build/wg2awg-*.tar.gz

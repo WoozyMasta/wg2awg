@@ -1,0 +1,14 @@
+---
+Checks: >
+  -*,
+  clang-analyzer-core.*,
+  clang-analyzer-deadcode.*,
+  clang-analyzer-nullability.*,
+  clang-analyzer-unix.*,
+  bugprone-sizeof-expression,
+  bugprone-suspicious-memset-usage,
+  bugprone-misplaced-widening-cast
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^src/.*'
+FormatStyle: none
+...

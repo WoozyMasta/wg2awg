@@ -1,0 +1,18 @@
+ARG MUSLCC_TAG=x86_64-linux-musl
+FROM --platform=$BUILDPLATFORM docker.io/muslcc/x86_64:$MUSLCC_TAG AS test
+
+ARG TEST_TARGET=test
+ARG VERSION=dev
+ARG TARGETPLATFORM
+
+# hadolint ignore=DL3018
+RUN apk add --no-cache make
+
+WORKDIR /src
+COPY src/ src/
+COPY Makefile .
+
+RUN set -eux; \
+    make VERSION="$VERSION" CC=gcc SANITIZER_CC=gcc TEST_LDFLAGS=-static $TEST_TARGET; \
+    make VERSION="$VERSION" CC=gcc build; \
+    ! readelf -d ./build/wg2awg 2>/dev/null | grep -q '(NEEDED)'

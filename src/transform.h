@@ -1,0 +1,154 @@
+#ifndef AWG_TRANSFORM_H
+#define AWG_TRANSFORM_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include "obfs.h"
+
+/* WireGuard message types (LE uint32 in first 4 bytes) */
+#define WG_HANDSHAKE_INIT 1
+#define WG_HANDSHAKE_RESPONSE 2
+#define WG_COOKIE_REPLY 3
+#define WG_TRANSPORT_DATA 4
+
+/* WireGuard packet sizes */
+#define WG_INIT_SIZE 148
+#define WG_RESP_SIZE 92
+#define WG_COOKIE_SIZE 64
+#define WG_TRANSPORT_MIN 32
+
+/* Shared fixed buffer sizes used by the proxy data paths */
+#define AWG_PACKET_BUF_SIZE 1500
+#define AWG_PACKET_HEADROOM 1500
+
+/* H range for v2 */
+typedef struct {
+    uint32_t min, max;
+} hrange_t;
+
+static inline uint32_t hrange_pick(const hrange_t *r, uint64_t rand_val) {
+    if (r->min == r->max)
+        return r->min;
+    uint64_t span = (uint64_t)r->max - (uint64_t)r->min + 1u;
+    return r->min + (uint32_t)(rand_val % span);
+}
+
+static inline int hrange_contains(const hrange_t *r, uint32_t v) {
+    return v >= r->min && v <= r->max;
+}
+
+/* CPS segment kinds */
+#define CPS_STATIC 'b'
+#define CPS_RANDOM 'r'
+#define CPS_TIMESTAMP 't'
+#define CPS_COUNTER 'c'
+#define CPS_RANDOM_CHARS 'C'
+#define CPS_RANDOM_DIGITS 'D'
+
+#define CPS_MAX_SEGMENTS 32
+#define CPS_MAX_STATIC 1500
+
+typedef struct {
+    uint8_t kind;
+    uint16_t size;     /* for r/rc/rd */
+    uint16_t data_off; /* offset into static_data for 'b' */
+    uint16_t data_len; /* length in static_data for 'b' */
+} cps_segment_t;
+
+typedef struct {
+    cps_segment_t segs[CPS_MAX_SEGMENTS];
+    uint8_t static_data[CPS_MAX_STATIC];
+    int nseg;
+    int static_used;
+} cps_template_t;
+
+/* Config struct */
+#define AWG_MAX_SERVER_PEERS 256
+
+typedef struct {
+    int jc, jmin, jmax;
+    int s1, s2, s3, s4;
+    hrange_t h1, h2, h3, h4;
+
+    cps_template_t *cps[5]; /* I1-I5, NULL if not configured */
+
+    uint8_t server_pub[32];
+    uint8_t client_pub[32];
+    uint8_t server_peer_pubs[AWG_MAX_SERVER_PEERS][32];
+    uint8_t mac1key_server[32];
+    uint8_t mac1key_client[32];
+    uint8_t server_peer_mac1keys[AWG_MAX_SERVER_PEERS][32];
+    int server_peer_count;
+
+    uint32_t h4_fixed;
+    int h4_noop;                /* H4={4,4} && S4==0 */
+    int init_total;             /* S1 + 148 */
+    int resp_total;             /* S2 + 92 */
+    int cookie_total;           /* S3 + 64 */
+    int has_server_pub;         /* server_pub != zero */
+    int has_client_pub;         /* client_pub != zero */
+    const uint8_t *mac1key_out; /* MAC1 key for outbound (WG->AWG) recompute */
+    const uint8_t *mac1key_in;  /* MAC1 key for inbound (AWG->WG) recompute */
+    int transport_size_ambiguous; /* handshake size can overlap transport */
+
+    int timeout;               /* inactivity reconnect, seconds, default 180 */
+    int remote_silent_timeout; /* client-active-but-remote-silent reconnect,
+                                  seconds, default 300 */
+    int connect_retries;       /* max initial connect attempts, 0 = unlimited */
+    int log_level;
+    int socket_buf; /* socket buffer size */
+    int src_port;   /* 0 = auto */
+
+    int cpu_c2s;   /* CPU affinity for c2s thread (-1 = auto) */
+    int cpu_s2c;   /* CPU affinity for s2c thread (-1 = auto) */
+    int busy_poll; /* SO_BUSY_POLL timeout in μs (0 = off) */
+    int no_gro;    /* disable UDP GRO (AWG_NO_GRO=1) */
+
+    int mode; /* 0=client, 1=gateway, 2=server */
+    awg_obfs_profile_t obfs_profile;
+} awg_config_t;
+
+#define AWG_MODE_CLIENT 0
+#define AWG_MODE_GATEWAY 1
+#define AWG_MODE_SERVER 2
+
+/* Compute MAC1 keys and fast-path flags. Call after setting all config fields.
+ */
+void config_compute(awg_config_t *cfg);
+
+/* Validate config values that participate in buffer sizing and layout. */
+int config_validate(const awg_config_t *cfg, const char **err_msg);
+
+/* Transform outbound WG->AWG. Returns output pointer and length.
+ * buf has dataoff bytes of headroom before the packet data.
+ * sendJunk is set to 1 if junk should be sent before this packet. */
+uint8_t *transform_outbound(uint8_t *buf, int dataoff, int n,
+                            const awg_config_t *cfg, uint64_t rand_val,
+                            int *out_len, int *sendJunk);
+
+/* Same as transform_outbound(), but allows overriding the outbound MAC1 key
+ * for handshake packets. Pass NULL to use cfg->mac1key_out. */
+uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
+                                      const awg_config_t *cfg,
+                                      const uint8_t *mac1key_out,
+                                      uint64_t rand_val, int *out_len,
+                                      int *sendJunk);
+
+/* Transform inbound AWG->WG. Returns output pointer and length, or NULL if
+ * invalid/junk. */
+uint8_t *transform_inbound(uint8_t *buf, int n, const awg_config_t *cfg,
+                           int *out_len);
+
+/* In server mode, match an original WireGuard handshake response against the
+ * configured explicit client peer list. Returns peer index or -1 if no match.
+ */
+int config_server_resolve_peer_for_response(const awg_config_t *cfg,
+                                            const uint8_t *wg_resp, int n);
+
+/* Generate junk packets into pre-allocated buffer.
+ * junk_buf: buffer of at least jc*jmax bytes (pre-filled with random).
+ * sizes[]: output array of packet sizes (at least jc entries).
+ * Returns number of junk packets. */
+int generate_junk(const awg_config_t *cfg, uint8_t *junk_buf, int *sizes);
+
+#endif
