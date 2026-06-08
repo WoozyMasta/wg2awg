@@ -26,7 +26,7 @@
 #endif
 
 typedef struct {
-    /* === Hot fields === */
+    /* Hot fields */
     awg_config_t *cfg;            /* 8B */
     int listen_fd;                /* 4B */
     _Atomic int remote_fd;        /* 4B */
@@ -54,7 +54,7 @@ typedef struct {
     uint16_t _pad0;  /* 2B */
     fastrand_t rng;  /* 8B */
 
-    /* === Warm: batch I/O === */
+    /* Warm: batch I/O */
 
     /* Batch I/O buffers - c2s direction */
     struct {
@@ -83,7 +83,7 @@ typedef struct {
         socklen_t addrlens[BATCH_SIZE];
     } send_s2c;
 
-    /* === Cold: init/reconnect === */
+    /* Cold: init/reconnect */
     struct sockaddr_storage listen_addr;
     socklen_t listen_addr_len;
     struct sockaddr_storage remote_addr;
@@ -118,7 +118,7 @@ typedef struct {
     struct sockaddr_storage gro_addr_c2s;
     int gro_enabled_c2s;
 
-    /* === Large cold arrays === */
+    /* Large cold arrays */
     uint32_t h4_ring[H4_RING_SIZE];
     session_entry_t sessions[SESSION_TABLE_SIZE];
     obfs_session_t obfs_c2s;

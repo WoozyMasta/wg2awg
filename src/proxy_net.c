@@ -51,7 +51,7 @@ static void proxy_note_dns_resolve_failure(proxy_t *p, const char *host,
         "DNS resolve failure timeout exceeded: elapsed=",
         u32_to_str(eb, (unsigned)elapsed), "s limit=",
         u32_to_str(tb, (unsigned)p->cfg->dns_resolve_failure_timeout),
-        "s), exiting"};
+        "s, exiting"};
     log_msgn("ERROR: ", timeout_parts, 5);
     _exit(1);
 }

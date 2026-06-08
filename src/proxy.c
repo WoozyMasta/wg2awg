@@ -219,12 +219,14 @@ __attribute__((hot)) static void *s2c_thread(void *arg) {
             continue;
         }
 
-        /* === Receive === */
+        /* Receive */
         int nsend = 0;
 
         if (p->gro_enabled && !gateway_path) {
-            /* GRO path: client mode only (gateway uses outbound which needs
-             * headroom) */
+            /*
+                GRO path: client mode only
+                (gateway uses outbound which needs headroom)
+            */
             int seg_size;
             int n = proxy_io_recv_gro(p, remote_fd, &seg_size);
             if (n <= 0) {
@@ -346,7 +348,7 @@ __attribute__((hot)) static void *s2c_thread(void *arg) {
             }
         }
 
-        /* === Send === */
+        /* Send */
         if (nsend > 0) {
             for (int i = 0; i < nsend; i++)
                 p->send_s2c.msgs[i].msg_hdr.msg_namelen =
