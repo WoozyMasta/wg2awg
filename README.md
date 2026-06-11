@@ -1,5 +1,8 @@
 # wg2awg
 
+<!-- markdownlint-disable-next-line MD033 -->
+<img src="logo.svg" alt="wg2awg" align="right" width="256">
+
 `wg2awg` is a lightweight UDP proxy that converts packet format between
 standard WireGuard and AmneziaWG.
 
@@ -36,15 +39,7 @@ wg2awg is derived from amneziawg-mikrotik-c by timbrs:
 This is the most universal layout when both edges run plain WireGuard stacks,
 but the transport path between them must look like AWG traffic.
 
-```mermaid
-flowchart LR
-  WGA[Site A WireGuard] -->|WG UDP| PA[wg2awg client]
-  PA -->|AWG UDP| PB[wg2awg gateway or server]
-  PB -->|WG UDP| WGB[Site B WireGuard]
-  WGB -->|WG UDP| PB
-  PB -->|AWG UDP| PA
-  PA -->|WG UDP| WGA
-```
+![End-to-End Topology](assets/e2e.svg)
 
 With this pattern you keep native WireGuard on both ends
 and move AWG framing logic to dedicated proxy processes.
@@ -53,13 +48,7 @@ and move AWG framing logic to dedicated proxy processes.
 
 Use when your router has a local WireGuard client and a remote AWG server.
 
-```mermaid
-flowchart LR
-  R[Router WireGuard client] -->|WG UDP| P[wg2awg client]
-  P -->|AWG UDP| S[Remote AWG server]
-  S -->|AWG UDP| P
-  P -->|WG UDP| R
-```
+![Client Mode](assets/client.svg)
 
 Client mode (`AWG_MODE=client`) is the WG -> AWG direction at egress
 and AWG -> WG on return.
@@ -70,13 +59,7 @@ is pure WireGuard and only the remote side expects AWG-framed packets.
 
 Use when the remote side sends AWG and your local backend expects plain WG.
 
-```mermaid
-flowchart LR
-  N[Remote wg2awg client] -->|AWG UDP| P[wg2awg gateway]
-  P -->|WG UDP| W[Local WireGuard server]
-  W -->|WG UDP| P
-  P -->|AWG UDP| N
-```
+![Gateway Mode](assets/gateway.svg)
 
 Gateway mode is the opposite mapping of client mode
 for a single upstream backend.
@@ -87,17 +70,7 @@ and feed a plain WireGuard service behind it.
 
 Use when many AWG clients share one local WireGuard server.
 
-```mermaid
-flowchart LR
-  C1[Client mode peer 1] -->|AWG UDP| H[wg2awg server]
-  C2[Client mode peer 2] -->|AWG UDP| H
-  C3[Client mode peer N] -->|AWG UDP| H
-  H -->|WG UDP| W[Local WireGuard server]
-  W -->|WG UDP| H
-  H -->|AWG UDP via session table| C1
-  H -->|AWG UDP via session table| C2
-  H -->|AWG UDP via session table| C3
-```
+![Server Mode](assets/server.svg)
 
 Server mode extends gateway behavior with per-client session routing.
 It tracks WireGuard sender/receiver indices and maps responses back to the
