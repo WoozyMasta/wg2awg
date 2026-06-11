@@ -39,7 +39,7 @@ wg2awg is derived from amneziawg-mikrotik-c by timbrs:
 This is the most universal layout when both edges run plain WireGuard stacks,
 but the transport path between them must look like AWG traffic.
 
-![End-to-End Topology](assets/e2e.svg)
+![End-to-End Topology](assets/e2e.drawio.png)
 
 With this pattern you keep native WireGuard on both ends
 and move AWG framing logic to dedicated proxy processes.
@@ -48,7 +48,7 @@ and move AWG framing logic to dedicated proxy processes.
 
 Use when your router has a local WireGuard client and a remote AWG server.
 
-![Client Mode](assets/client.svg)
+![Client Mode](assets/client.drawio.png)
 
 Client mode (`AWG_MODE=client`) is the WG -> AWG direction at egress
 and AWG -> WG on return.
@@ -59,7 +59,7 @@ is pure WireGuard and only the remote side expects AWG-framed packets.
 
 Use when the remote side sends AWG and your local backend expects plain WG.
 
-![Gateway Mode](assets/gateway.svg)
+![Gateway Mode](assets/gateway.drawio.png)
 
 Gateway mode is the opposite mapping of client mode
 for a single upstream backend.
@@ -70,7 +70,7 @@ and feed a plain WireGuard service behind it.
 
 Use when many AWG clients share one local WireGuard server.
 
-![Server Mode](assets/server.svg)
+![Server Mode](assets/server.drawio.png)
 
 Server mode extends gateway behavior with per-client session routing.
 It tracks WireGuard sender/receiver indices and maps responses back to the
