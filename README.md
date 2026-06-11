@@ -32,6 +32,28 @@ wg2awg is derived from amneziawg-mikrotik-c by timbrs:
 * Aggregate multiple AWG clients
   into a single WireGuard backend in `server` mode.
 
+## Why This Approach
+
+`wg2awg` keeps the platform WireGuard implementation unchanged
+where the platform already provides one.
+
+On Linux hosts and routers with kernel WireGuard support,
+encryption and the main WireGuard datapath stay in the OS or router kernel,
+while `wg2awg` adds only the AmneziaWG-compatible framing, padding,
+junk/CPS patterns, and optional outer obfuscation layer in userspace.
+
+This differs from a full userspace AmneziaWG client such as
+[`amneziawg-go`](https://github.com/amnezia-vpn/amneziawg-go),
+which replaces the WireGuard datapath itself with a userspace VPN engine.
+
+Practical implications:
+
+* keep vanilla WireGuard behavior and updates
+  tied to the host OS or router platform;
+* minimize migration risk by not replacing the platform WireGuard stack;
+* add only the obfuscation/framing work needed for AWG compatibility;
+* usually keep additional overhead lower than a full userspace AWG client.
+
 ## Architecture
 
 ### End-to-End Topology (proxy on both sides)
@@ -687,6 +709,7 @@ make container-build-matrix
 ## References
 
 * [Historical idea reference](https://github.com/timbrs/amneziawg-mikrotik-c)
+* [AmneziaWG Go implementation](https://github.com/amnezia-vpn/amneziawg-go)
 * [AmneziaWG Linux kernel module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module)
 * [OpenWrt Table of Hardware](https://openwrt.org/toh/start)
 * [OpenWrt downloads index](https://downloads.openwrt.org/)
