@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog][], and this project adheres to
 [Semantic Versioning][].
 
-## [Unreleased]
+## [0.3.0] - 2026-06-15
 
 ### Added
 
@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog][], and this project adheres to
   with a lower bound of `30` and, when `AWG_REMOTE_SILENT_EXIT_TIMEOUT`
   is enabled, an upper bound of half that value (fallback `60`),
   down from the previous fixed `300`. An explicit value still overrides.
+
+[0.3.0]: https://github.com/WoozyMasta/wg2awg/compare/0.2.1...0.3.0
 
 ## [0.2.1] - 2026-06-11
 
