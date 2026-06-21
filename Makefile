@@ -86,8 +86,21 @@ build:
 
 container-build-matrix: $(addprefix container-build-,$(ALL_ARCHS))
 
+E2E_IMAGE ?= wg2awg-e2e
+
+.PHONY: test-e2e-image test-e2e test-e2e-fast
 .PHONY: check-local container-check container-test container-check-image container-lint
 .PHONY: container-test-matrix
+
+test-e2e-image:
+	docker build -t $(E2E_IMAGE) -f tests/e2e/Dockerfile \
+		--build-arg WGAWG_BINARY=build/wg2awg .
+
+test-e2e: test-e2e-image
+	bash tests/e2e/run.sh
+
+test-e2e-fast: test-e2e-image
+	E2E_FAST=1 bash tests/e2e/run.sh
 
 check-local: fmt-check lint test test-hardening test-stress
 	@echo "Local CI checks passed"
