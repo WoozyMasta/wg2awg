@@ -56,3 +56,34 @@ int base64_decode(const char *in, size_t inlen, unsigned char *out,
     }
     return (int)o;
 }
+
+static const char b64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+int base64_encode(const uint8_t *in, size_t inlen, char *out) {
+    size_t i, o = 0;
+    for (i = 0; i + 2 < inlen; i += 3) {
+        uint32_t v =
+            ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8) | in[i + 2];
+        out[o++] = b64_chars[(v >> 18) & 0x3F];
+        out[o++] = b64_chars[(v >> 12) & 0x3F];
+        out[o++] = b64_chars[(v >> 6) & 0x3F];
+        out[o++] = b64_chars[v & 0x3F];
+    }
+    size_t rem = inlen - i;
+    if (rem == 2) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8);
+        out[o++] = b64_chars[(v >> 18) & 0x3F];
+        out[o++] = b64_chars[(v >> 12) & 0x3F];
+        out[o++] = b64_chars[(v >> 6) & 0x3F];
+        out[o++] = '=';
+    } else if (rem == 1) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        out[o++] = b64_chars[(v >> 18) & 0x3F];
+        out[o++] = b64_chars[(v >> 12) & 0x3F];
+        out[o++] = '=';
+        out[o++] = '=';
+    }
+    out[o] = '\0';
+    return (int)o;
+}

@@ -16,6 +16,7 @@
 #include "proxy_init_io.h"
 #include "proxy_net.h"
 #include "proxy_runtime.h"
+#include "morph.h"
 #include "obfs.h"
 #include <string.h>
 #include <stdlib.h>
@@ -132,8 +133,17 @@ int proxy_init(proxy_t *p, awg_config_t *cfg, const char *listen_str,
     obfs_session_init(&p->obfs_s2c, cfg->obfs_profile,
                       seed ^ 0x2222222222222222ULL);
 
-    /* Pre-allocate junk buffers */
-    if (cfg->jc > 0 && cfg->jmax > 0) {
+    /* Pre-allocate junk buffers.
+     * In morph mode allocate worst-case size; the per-slot cfg drives actual
+     * use. */
+    if (cfg->morph_enabled) {
+        size_t junk_bytes = (size_t)MORPH_JC_MAX * (size_t)MORPH_JMAX_MAX;
+        size_t junk_sizes_bytes = (size_t)MORPH_JC_MAX * sizeof(int);
+        p->junk_buf = (uint8_t *)malloc(junk_bytes);
+        p->junk_sizes = (int *)malloc(junk_sizes_bytes);
+        if (!p->junk_buf || !p->junk_sizes)
+            return -1;
+    } else if (cfg->jc > 0 && cfg->jmax > 0) {
         size_t junk_bytes;
         size_t junk_sizes_bytes;
         if (junk_layout_sizes(cfg, &junk_bytes, &junk_sizes_bytes) < 0)
@@ -146,6 +156,10 @@ int proxy_init(proxy_t *p, awg_config_t *cfg, const char *listen_str,
 
     /* Init H4 ring */
     fill_h4_ring(p);
+
+    /* Init morph state (prev/curr/next profiles) */
+    if (cfg->morph_enabled)
+        morph_state_init(&p->morph, cfg, cfg->morph_key);
 
     proxy_init_io_state(p);
 

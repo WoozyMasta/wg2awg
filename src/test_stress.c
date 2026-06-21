@@ -47,6 +47,7 @@
 #define BIDIR_COUNT 5000
 #define RECV_TIMEOUT_MS 4000
 #define PROXY_BINARY_DEFAULT "build/wg2awg"
+#define TEST_MORPH_KEY "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 static int find_free_port(void) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -240,6 +241,51 @@ static pid_t start_proxy_with_gro(const char *mode, int listen_port,
     return pid;
 }
 
+static pid_t start_morph_proxy_profile(const char *mode, int listen_port,
+                                       int remote_port,
+                                       const char *obfs_profile) {
+    int src_port = find_free_port();
+    pid_t pid = fork();
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        const char *proxy_bin = proxy_binary_path();
+        char lbuf[32], rbuf[64], sp[8];
+
+        snprintf(lbuf, sizeof(lbuf), ":%d", listen_port);
+        snprintf(rbuf, sizeof(rbuf), "127.0.0.1:%d", remote_port);
+        setenv("AWG_LISTEN", lbuf, 1);
+        setenv("AWG_REMOTE", rbuf, 1);
+        setenv("AWG_MODE", mode, 1);
+        setenv("AWG_MORPH_KEY", TEST_MORPH_KEY, 1);
+        if (obfs_profile)
+            setenv("AWG_OBFS_PROFILE", obfs_profile, 1);
+        else
+            unsetenv("AWG_OBFS_PROFILE");
+        setenv("AWG_SERVER_PUB", DUMMY_SERVER_PUB, 1);
+        setenv("AWG_CLIENT_PUB", DUMMY_CLIENT_PUB, 1);
+        setenv("AWG_LOG_LEVEL", "error", 1);
+        setenv("AWG_TIMEOUT", "30", 1);
+        setenv("AWG_NO_GRO", "1", 1);
+        setenv("AWG_SRC_PORT", itoa_buf(src_port, sp), 1);
+
+        static const char *const conflicts[] = {
+            "AWG_JC", "AWG_JMIN", "AWG_JMAX", "AWG_S1", "AWG_S2", "AWG_S3",
+            "AWG_S4", "AWG_H1",   "AWG_H2",   "AWG_H3", "AWG_H4",
+        };
+        for (size_t i = 0; i < sizeof(conflicts) / sizeof(conflicts[0]); i++)
+            unsetenv(conflicts[i]);
+
+        execl(proxy_bin, "wg2awg", NULL);
+        _exit(127);
+    }
+    usleep(200000);
+    int st = 0;
+    if (waitpid(pid, &st, WNOHANG) == pid)
+        return -1;
+    return pid;
+}
+
 static void stop_proxy(pid_t pid) {
     if (pid <= 0)
         return;
@@ -270,6 +316,17 @@ static void make_wg_transport(uint8_t *buf, uint32_t receiver_index,
     memcpy(buf + 8, &counter, 8);
     for (int i = 16; i < total_size; i++)
         buf[i] = (uint8_t)(i ^ (counter & 0xFF));
+}
+
+static void make_wg_response(uint8_t *buf, uint32_t sender_index,
+                             uint32_t receiver_index) {
+    memset(buf, 0, WG_RESP_SIZE);
+    uint32_t t = WG_HANDSHAKE_RESPONSE;
+    memcpy(buf, &t, 4);
+    memcpy(buf + 4, &sender_index, 4);
+    memcpy(buf + 8, &receiver_index, 4);
+    for (int i = 12; i < WG_RESP_SIZE; i++)
+        buf[i] = (uint8_t)(i ^ (sender_index & 0xff));
 }
 
 /* AWG-format init: S1 padding + H1 type + init payload */
@@ -445,6 +502,106 @@ static void test_client_burst(void) {
     stop_proxy(proxy);
     close(client_fd);
     close(server_fd);
+}
+
+static void run_morph_chain_bidirectional(int paced_rollover,
+                                          const char *obfs_profile) {
+    int client_proxy_port = find_free_port();
+    int gateway_proxy_port = find_free_port();
+    int server_port = find_free_port();
+    ASSERT(client_proxy_port > 0);
+    ASSERT(gateway_proxy_port > 0);
+    ASSERT(server_port > 0);
+
+    int server_fd = make_udp_socket(server_port);
+    int client_fd = make_client_socket();
+    ASSERT(server_fd >= 0);
+    ASSERT(client_fd >= 0);
+
+    if (obfs_profile)
+        setenv("AWG_OBFS_PROFILE", obfs_profile, 1);
+    pid_t gateway =
+        obfs_profile ? start_proxy("gateway", gateway_proxy_port, server_port)
+                     : start_morph_proxy_profile("gateway", gateway_proxy_port,
+                                                 server_port, NULL);
+    ASSERT(gateway > 0);
+    pid_t client =
+        obfs_profile
+            ? start_proxy("client", client_proxy_port, gateway_proxy_port)
+            : start_morph_proxy_profile("client", client_proxy_port,
+                                        gateway_proxy_port, NULL);
+    if (obfs_profile)
+        unsetenv("AWG_OBFS_PROFILE");
+    ASSERT(client > 0);
+
+    struct sockaddr_in client_proxy_addr = make_addr(client_proxy_port);
+    uint8_t packet[512];
+    make_wg_init(packet, 0x1000);
+    ASSERT_EQ(sendto(client_fd, packet, WG_INIT_SIZE, 0,
+                     (struct sockaddr *)&client_proxy_addr,
+                     sizeof(client_proxy_addr)),
+              WG_INIT_SIZE);
+
+    struct pollfd pfd = {.fd = server_fd, .events = POLLIN};
+    ASSERT(poll(&pfd, 1, RECV_TIMEOUT_MS) > 0);
+    struct sockaddr_in gateway_addr;
+    socklen_t gateway_addr_len = sizeof(gateway_addr);
+    int n = (int)recvfrom(server_fd, packet, sizeof(packet), 0,
+                          (struct sockaddr *)&gateway_addr, &gateway_addr_len);
+    ASSERT_EQ(n, WG_INIT_SIZE);
+    uint32_t type = 0;
+    memcpy(&type, packet, 4);
+    ASSERT_EQ(type, WG_HANDSHAKE_INIT);
+
+    make_wg_response(packet, 0x2000, 0x1000);
+    ASSERT_EQ(sendto(server_fd, packet, WG_RESP_SIZE, 0,
+                     (struct sockaddr *)&gateway_addr, gateway_addr_len),
+              WG_RESP_SIZE);
+    n = recv_one(client_fd, packet, sizeof(packet), RECV_TIMEOUT_MS);
+    ASSERT_EQ(n, WG_RESP_SIZE);
+    memcpy(&type, packet, 4);
+    ASSERT_EQ(type, WG_HANDSHAKE_RESPONSE);
+
+    int packets = paced_rollover ? 300 : 100;
+    for (int i = 0; i < packets; i++) {
+        make_wg_transport(packet, 0x2000, (uint64_t)i, 200);
+        ASSERT_EQ(sendto(client_fd, packet, 200, 0,
+                         (struct sockaddr *)&client_proxy_addr,
+                         sizeof(client_proxy_addr)),
+                  200);
+        n = recv_one(server_fd, packet, sizeof(packet), RECV_TIMEOUT_MS);
+        ASSERT_EQ(n, 200);
+        memcpy(&type, packet, 4);
+        ASSERT_EQ(type, WG_TRANSPORT_DATA);
+
+        make_wg_transport(packet, 0x1000, (uint64_t)i, 200);
+        ASSERT_EQ(sendto(server_fd, packet, 200, 0,
+                         (struct sockaddr *)&gateway_addr, gateway_addr_len),
+                  200);
+        n = recv_one(client_fd, packet, sizeof(packet), RECV_TIMEOUT_MS);
+        ASSERT_EQ(n, 200);
+        memcpy(&type, packet, 4);
+        ASSERT_EQ(type, WG_TRANSPORT_DATA);
+        if (paced_rollover)
+            usleep(10000);
+    }
+
+    stop_proxy(client);
+    stop_proxy(gateway);
+    close(client_fd);
+    close(server_fd);
+}
+
+static void test_morph_chain_bidirectional(void) {
+    run_morph_chain_bidirectional(0, NULL);
+}
+
+static void test_obfs_chain_bidirectional(void) {
+    run_morph_chain_bidirectional(0, "dtls_record");
+}
+
+static void test_morph_slot_rollover(void) {
+    run_morph_chain_bidirectional(1, NULL);
 }
 
 /* Scenario 2: Reverse mode bidirectional */
@@ -1313,6 +1470,9 @@ int main(void) {
     } while (0)
 
     RUN_STRESS_IF(client_burst);
+    RUN_STRESS_IF(morph_chain_bidirectional);
+    RUN_STRESS_IF(obfs_chain_bidirectional);
+    RUN_STRESS_IF(morph_slot_rollover);
     RUN_STRESS_IF(gateway_bidirectional);
     RUN_STRESS_IF(server_multiclient);
     RUN_STRESS_IF(server_rekey);

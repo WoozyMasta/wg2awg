@@ -114,6 +114,10 @@ typedef struct {
 
     int mode; /* 0=client, 1=gateway, 2=server */
     awg_obfs_profile_t obfs_profile;
+
+    /* Morph Mode: set by load_morph_key_env / apply_file_morph_override. */
+    int morph_enabled;
+    uint8_t morph_key[32]; /* raw 32-byte key; valid iff morph_enabled */
 } awg_config_t;
 
 #define AWG_MODE_CLIENT 0

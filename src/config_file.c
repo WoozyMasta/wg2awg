@@ -302,6 +302,19 @@ int config_file_parse(const char *path, awg_file_config_t *out) {
                     return -1;
                 }
                 out->have_h4 = 1;
+            } else if (keq(key, "MorphKey")) {
+                if (decode_key32(val, out->morph_key, "MorphKey") < 0) {
+                    fclose(f);
+                    return -1;
+                }
+                out->have_morph_key = 1;
+            } else if (keq(key, "ObfsProfile")) {
+                if (parse_obfs_profile_strict(val, &out->obfs_profile) < 0) {
+                    log_msg("FATAL: ", "config: ObfsProfile: invalid profile");
+                    fclose(f);
+                    return -1;
+                }
+                out->have_obfs_profile = 1;
             } else if (keq(key, "I1") || keq(key, "I2") || keq(key, "I3") ||
                        keq(key, "I4") || keq(key, "I5")) {
                 int idx = key[1] - '1';

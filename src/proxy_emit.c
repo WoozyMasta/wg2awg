@@ -95,3 +95,32 @@ void proxy_emit_send_junk_and_cps(proxy_t *p, int fd) {
         }
     }
 }
+
+void proxy_emit_send_junk_cfg(proxy_t *p, int fd, const awg_config_t *jcfg) {
+    if (!jcfg || jcfg->jc <= 0 || jcfg->jmax <= 0)
+        return;
+    size_t junk_bytes = (size_t)jcfg->jc * (size_t)jcfg->jmax;
+    fastrand_fill(&p->rng, p->junk_buf, junk_bytes);
+    int njunk = generate_junk(jcfg, p->junk_buf, p->junk_sizes);
+    size_t off = 0;
+    for (int i = 0; i < njunk; i++) {
+        proxy_emit_send_packet(fd, p->junk_buf + off, p->junk_sizes[i]);
+        off += (size_t)p->junk_sizes[i];
+    }
+}
+
+void proxy_emit_send_junk_cfg_to(proxy_t *p, int fd, const awg_config_t *jcfg,
+                                 const struct sockaddr_storage *addr,
+                                 socklen_t addr_len) {
+    if (!jcfg || jcfg->jc <= 0 || jcfg->jmax <= 0)
+        return;
+    size_t junk_bytes = (size_t)jcfg->jc * (size_t)jcfg->jmax;
+    fastrand_fill(&p->rng, p->junk_buf, junk_bytes);
+    int njunk = generate_junk(jcfg, p->junk_buf, p->junk_sizes);
+    size_t off = 0;
+    for (int i = 0; i < njunk; i++) {
+        proxy_emit_send_packet_to(fd, p->junk_buf + off, p->junk_sizes[i], addr,
+                                  addr_len);
+        off += (size_t)p->junk_sizes[i];
+    }
+}

@@ -65,6 +65,14 @@ typedef struct {
      */
     int peer_pub_count;
     uint8_t peer_pubs[AWG_MAX_SERVER_PEERS][32];
+
+    /* Morph Mode: MorphKey = <base64> in [Interface] */
+    int have_morph_key;
+    uint8_t morph_key[32];
+
+    /* wg2awg outer obfuscation extension. */
+    int have_obfs_profile;
+    awg_obfs_profile_t obfs_profile;
 } awg_file_config_t;
 
 /*

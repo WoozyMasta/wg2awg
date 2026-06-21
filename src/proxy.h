@@ -2,6 +2,7 @@
 #define AWG_PROXY_H
 
 #include "transform.h"
+#include "morph.h"
 #include "fastrand.h"
 #include "session_table.h"
 #include "obfs.h"
@@ -68,6 +69,7 @@ typedef struct {
     struct {
         struct mmsghdr msgs[BATCH_SIZE];
         struct iovec iovecs[BATCH_SIZE];
+        uint8_t bufs[BATCH_SIZE][BUF_SIZE + AWG_PACKET_HEADROOM];
     } send_c2s;
 
     /* Batch I/O buffers - s2c direction (non-GRO path) */
@@ -80,6 +82,7 @@ typedef struct {
     struct {
         struct mmsghdr msgs[BATCH_SIZE];
         struct iovec iovecs[BATCH_SIZE];
+        uint8_t bufs[BATCH_SIZE][BUF_SIZE + AWG_PACKET_HEADROOM];
         struct sockaddr_storage addrs[BATCH_SIZE];
         socklen_t addrlens[BATCH_SIZE];
     } send_s2c;
@@ -126,6 +129,9 @@ typedef struct {
     obfs_session_t obfs_s2c;
     uint32_t obfs_fail_c2s;
     uint32_t obfs_fail_s2c;
+
+    /* Morph Mode: double-buffer snapshot for lock-free hot-path reads. */
+    morph_state_t morph;
 
 } proxy_t;
 

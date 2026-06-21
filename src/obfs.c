@@ -54,6 +54,16 @@ awg_obfs_profile_t parse_obfs_profile(const char *s) {
     return AWG_OBFS_OFF;
 }
 
+int parse_obfs_profile_strict(const char *s, awg_obfs_profile_t *out) {
+    if (!s || !s[0] || !out)
+        return -1;
+    awg_obfs_profile_t profile = parse_obfs_profile(s);
+    if (profile == AWG_OBFS_OFF && !streqi(s, "off"))
+        return -1;
+    *out = profile;
+    return 0;
+}
+
 const char *obfs_profile_name(awg_obfs_profile_t profile) {
     switch (profile) {
     case AWG_OBFS_STUN_ICE:
@@ -107,13 +117,13 @@ static void marker_write_if_needed(obfs_session_t *s, uint8_t *dst) {
 
 static uint8_t *marker_unwrap_if_needed(obfs_session_t *s, uint8_t *in,
                                         int *len) {
-    if (s->marker_seen)
-        return in;
     if (*len >= 4 && memcmp(in, k_obfs_marker, 4) == 0) {
         s->marker_seen = 1;
         *len -= 4;
         return in + 4;
     }
+    if (s->marker_seen)
+        return in;
     if (s->marker_rx_window > 0) {
         s->marker_rx_window--;
         return NULL;
@@ -394,6 +404,20 @@ uint8_t *obfs_wrap(obfs_session_t *s, uint8_t *in, int in_len, int *out_len) {
     *out_len = in_len;
     s->tx_seq++;
     return in;
+}
+
+uint8_t *obfs_wrap_to(obfs_session_t *s, uint8_t *in, int in_len, uint8_t *out,
+                      int out_cap, int *out_len) {
+    if (!out || !out_len || out_cap < 0)
+        return NULL;
+    int wrapped_len = 0;
+    uint8_t *wrapped = obfs_wrap(s, in, in_len, &wrapped_len);
+    if (!wrapped || wrapped_len > out_cap)
+        return NULL;
+    if (wrapped_len > 0)
+        memmove(out, wrapped, (size_t)wrapped_len);
+    *out_len = wrapped_len;
+    return out;
 }
 
 uint8_t *obfs_unwrap(obfs_session_t *s, uint8_t *in, int in_len, int *out_len) {

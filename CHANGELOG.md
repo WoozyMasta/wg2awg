@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning][].
 ### Removed
 -->
 
+## Unreleased
+
+### Added
+
+* Add Morph Mode with per-slot handshake obfuscation derived from a shared
+  `MorphKey`, including config/env loading, `-g` key generation, and `-P`
+  probe CLI with `-S` slot override.
+* Add wg2awg-only `[Interface].ObfsProfile` config support.
+
 ## [0.4.0][] - 2026-06-15
 
 ### Added
