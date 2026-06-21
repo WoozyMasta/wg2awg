@@ -1,5 +1,6 @@
 #include "proxy_s2c_gateway.h"
 #include "proxy_emit.h"
+#include "morph.h"
 #include "log.h"
 #include "obfs.h"
 #include <string.h>
@@ -20,6 +21,14 @@ static obfs_session_t *pick_obfs_tx(proxy_t *p, session_entry_t *dest_entry) {
 static int obfs_max_packet_len(proxy_t *p) {
     return BUF_SIZE + AWG_PACKET_HEADROOM -
            obfs_profile_overhead_max(p->cfg->obfs_profile);
+}
+
+static uint8_t *wrap_for_batch(obfs_session_t *s, uint8_t *in, int in_len,
+                               uint8_t *stable_buf, int stable_cap,
+                               int *out_len) {
+    if (s->profile == AWG_OBFS_OFF)
+        return obfs_wrap(s, in, in_len, out_len);
+    return obfs_wrap_to(s, in, in_len, stable_buf, stable_cap, out_len);
 }
 
 static void log_marker_sent_once(obfs_session_t *s, const char *side) {
@@ -117,7 +126,9 @@ int proxy_s2c_process_gateway(proxy_t *p, uint8_t *base, uint8_t *pkt, int n,
                 return 0;
             obfs_session_t *obfs_tx = pick_obfs_tx(p, dest_entry);
             int wrapped_len = 0;
-            uint8_t *wrapped = obfs_wrap(obfs_tx, out, total, &wrapped_len);
+            uint8_t *wrapped = wrap_for_batch(
+                obfs_tx, out, total, p->send_s2c.bufs[*nsend],
+                (int)sizeof(p->send_s2c.bufs[*nsend]), &wrapped_len);
             if (!wrapped)
                 return 0;
             log_marker_sent_once(obfs_tx, "s2c");
@@ -151,15 +162,28 @@ int proxy_s2c_process_gateway(proxy_t *p, uint8_t *base, uint8_t *pkt, int n,
         }
     }
 
+    /* In morph mode use the current-slot profile cfg for handshakes. */
+    const awg_config_t *tx_cfg = cfg;
+    int morph_idx = -1;
+    if (cfg->morph_enabled) {
+        morph_idx = morph_snapshot_acquire(&p->morph);
+        tx_cfg = &p->morph.snap[morph_idx].cfgs[1];
+    }
+
     int out_len, sendJunk;
     uint8_t *out = transform_outbound_with_mac1(
-        base, prefix, n, cfg, out_mac1key, fastrand_u64(&p->rng), &out_len,
+        base, prefix, n, tx_cfg, out_mac1key, fastrand_u64(&p->rng), &out_len,
         &sendJunk);
 
     if (sendJunk) {
         log_debug("s2c: gateway: handshake init, sending junk");
         proxy_emit_send_junk_and_cps_to(p, p->listen_fd, dest_addr,
                                         dest_addr_len);
+        if (cfg->morph_enabled)
+            proxy_emit_send_junk_cfg_to(p, p->listen_fd, tx_cfg, dest_addr,
+                                        dest_addr_len);
+        if (morph_idx >= 0)
+            morph_snapshot_release(&p->morph, morph_idx);
         obfs_session_t *obfs_tx = pick_obfs_tx(p, dest_entry);
         int wrapped_len = 0;
         if (out_len > obfs_max_packet_len(p))
@@ -172,12 +196,16 @@ int proxy_s2c_process_gateway(proxy_t *p, uint8_t *base, uint8_t *pkt, int n,
         }
         return 1;
     }
+    if (morph_idx >= 0)
+        morph_snapshot_release(&p->morph, morph_idx);
 
     obfs_session_t *obfs_tx = pick_obfs_tx(p, dest_entry);
     int wrapped_len = 0;
     if (out_len > obfs_max_packet_len(p))
         return 0;
-    uint8_t *wrapped = obfs_wrap(obfs_tx, out, out_len, &wrapped_len);
+    uint8_t *wrapped =
+        wrap_for_batch(obfs_tx, out, out_len, p->send_s2c.bufs[*nsend],
+                       (int)sizeof(p->send_s2c.bufs[*nsend]), &wrapped_len);
     if (!wrapped)
         return 0;
     log_marker_sent_once(obfs_tx, "s2c");

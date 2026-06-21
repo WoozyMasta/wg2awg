@@ -1,4 +1,5 @@
 #include "proxy_control.h"
+#include "morph.h"
 #include "log.h"
 #include <unistd.h>
 #include <errno.h>
@@ -141,6 +142,9 @@ int proxy_control_loop(proxy_t *p, int timeout_secs, int silent_secs,
 
             if (fd == p->timer_fd) {
                 drain_timer_fd(p->timer_fd);
+                if (p->cfg->morph_enabled)
+                    morph_update_if_needed(&p->morph, p->cfg,
+                                           p->cfg->morph_key);
                 int had_activity = atomic_exchange_explicit(
                     &p->last_active, 0, memory_order_relaxed);
                 int had_remote_rx = atomic_exchange_explicit(

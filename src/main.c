@@ -1,4 +1,5 @@
 #include "proxy.h"
+#include "morph.h"
 #include "cps.h"
 #include "log.h"
 #include "base64.h"
@@ -32,7 +33,7 @@ static void print_help(void) {
         "\n"
         "Usage: wg2awg [-c <config>] [-l <level>] [-m <mode>]\n"
         "              [-L <host:port>] [-r <host:port>]\n"
-        "              [-s <auto|port>] [-h] [-v]\n"
+        "              [-s <auto|port>] [-g] [-P <key>] [-h] [-v]\n"
         "\n"
         "AmneziaWG <-> WireGuard transparent proxy.\n"
         "Translates AWG obfuscated traffic to plain WireGuard and back.\n"
@@ -49,9 +50,15 @@ static void print_help(void) {
         "  -s, --src-port <value>    Remote socket source port: auto | <port>\n"
         "  -h, --help                Show this help and exit\n"
         "  -v, --version             Show version and exit\n"
+        "  -g, --gen-morph-key       Generate a random MorphKey and print it "
+        "(base64)\n"
+        "  -P, --morph-probe <key>   Print derived Morph params for key "
+        "(base64 or hex)\n"
+        "      [-S, --slot N]        Probe-only slot override (default: "
+        "current)\n"
         "\n"
         "Config file (--config / AWG_CONFIG env var):\n"
-        "  Standard INI-format AmneziaWG client or server config.\n"
+        "  INI-format AmneziaWG client or server config.\n"
         "  Config file values take priority over environment variables.\n"
         "\n"
         "  [Interface] fields read:\n"
@@ -61,6 +68,8 @@ static void print_help(void) {
         "    Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5  AWG obfuscation parameters\n"
         "    DNS           DNS server(s), comma-separated; written to "
         "/etc/resolv.conf\n"
+        "    MorphKey      wg2awg Morph extension; not an AmneziaWG parameter\n"
+        "    ObfsProfile   wg2awg outer obfuscation profile; not AmneziaWG\n"
         "\n"
         "  [Peer] fields read:\n"
         "    PublicKey     remote AWG server public key\n"
@@ -91,7 +100,7 @@ static void print_help(void) {
         "    AWG_CLIENT_PUBS_FILE  Server mode: path to file with client "
         "public keys\n"
         "\n"
-        "  AWG obfuscation (override or supplement config file):\n"
+        "  AmneziaWG framing (protocol parameters):\n"
         "    AWG_JC                Junk packet count (0 = disabled)\n"
         "    AWG_JMIN              Junk packet minimum size, bytes\n"
         "    AWG_JMAX              Junk packet maximum size, bytes\n"
@@ -102,9 +111,15 @@ static void print_help(void) {
         "    AWG_S3                v2: cookie packet padding, bytes\n"
         "    AWG_S4                v2: transport packet padding, bytes\n"
         "    AWG_I1..AWG_I5        v1.5: CPS junk injection templates\n"
-        "    AWG_OBFS_PROFILE      outer profile: "
+        "\n"
+        "  wg2awg extensions (not part of AmneziaWG):\n"
+        "    The AWG_ prefix below is retained for config compatibility only.\n"
+        "    AWG_OBFS_PROFILE      wg2awg proxy-to-proxy outer profile: "
         "off|stun_ice|dtls_record|rtp_media|source_query|raknet|"
         "quic_short|game_enet|game_kcp|dns_like\n"
+        "    AWG_MORPH_KEY         wg2awg Morph key; replaces H/S/J params\n"
+        "    AWG_MORPH_KEY_FILE    path to file containing the wg2awg "
+        "MorphKey (base64)\n"
         "\n"
         "  Reconnect / timeouts:\n"
         "    AWG_TIMEOUT               Inactivity reconnect timeout, seconds "
@@ -209,6 +224,9 @@ int main(int argc, char *argv[]) {
     const char *listen_flag = NULL;
     const char *remote_flag = NULL;
     const char *src_port_flag = NULL;
+    int morph_gen_key_flag = 0;
+    const char *morph_probe_key = NULL;
+    int64_t morph_probe_slot = -1;
 
     for (int i = 1; i < argc; i++) {
         /* config */
@@ -269,12 +287,50 @@ int main(int argc, char *argv[]) {
                    strcmp(argv[i], "--version") == 0) {
             print_version();
             return 0;
+
+            /* gen-morph-key: output a CSPRNG base64 key and exit */
+        } else if (strcmp(argv[i], "-g") == 0 ||
+                   strcmp(argv[i], "--gen-morph-key") == 0) {
+            morph_gen_key_flag = 1;
+
+            /* morph-probe <key> [--slot N]: print derived params and exit */
+        } else if ((strcmp(argv[i], "-P") == 0 ||
+                    strcmp(argv[i], "--morph-probe") == 0) &&
+                   i + 1 < argc) {
+            morph_probe_key = argv[++i];
+        } else if ((strcmp(argv[i], "-S") == 0 ||
+                    strcmp(argv[i], "--slot") == 0) &&
+                   i + 1 < argc) {
+            char *end = NULL;
+            errno = 0;
+            morph_probe_slot = (int64_t)strtoll(argv[++i], &end, 10);
+            if (errno == ERANGE || !end || *end != '\0' ||
+                morph_probe_slot < 0) {
+                log_msg("FATAL: ", "--slot: expected non-negative integer");
+                return 1;
+            }
         } else {
             const char *parts[] = {"unknown option: ", argv[i]};
             log_msgn("FATAL: ", parts, 2);
             print_help();
             return 1;
         }
+    }
+
+    if (morph_probe_slot >= 0 && !morph_probe_key) {
+        log_msg("FATAL: ", "--slot requires --morph-probe");
+        return 1;
+    }
+
+    /* Early-exit utility flags (no config needed) */
+    if (morph_gen_key_flag) {
+        morph_gen_key();
+        return 0; /* morph_gen_key calls _exit on error, so this is clean exit
+                   */
+    }
+    if (morph_probe_key) {
+        morph_probe(morph_probe_key, morph_probe_slot);
+        return 0;
     }
 
     int cfg_file_loaded = 0;
@@ -331,8 +387,7 @@ int main(int argc, char *argv[]) {
     const char *listen_str = g_listen_buf;
     const char *remote_str = g_remote_buf;
 
-    /* -- 5. AWG obfuscation params (env var defaults, config file priority) --
-     */
+    /* -- 5. AmneziaWG framing + wg2awg outer profile -- */
     {
         const char *obf_err = NULL;
         if (load_obfuscation_env(cfg, &obf_err) < 0)
@@ -344,9 +399,20 @@ int main(int argc, char *argv[]) {
     /* Override with config file values (config has priority) */
     if (cfg_file_loaded)
         apply_file_obfuscation_overrides(cfg, &g_file_cfg);
+    if (cfg_file_loaded)
+        apply_file_obfs_profile_override(cfg, &g_file_cfg);
 
     if (cfg->jc > 0 && cfg->jmin == cfg->jmax && cfg->jmax < 65535)
         cfg->jmax++;
+
+    /* -- 5b. Morph key (env defaults, config file priority) -- */
+    {
+        const char *morph_err = NULL;
+        if (load_morph_key_env(cfg, &morph_err) < 0)
+            fatal(morph_err ? morph_err : "invalid morph key env");
+    }
+    if (cfg_file_loaded)
+        apply_file_morph_override(cfg, &g_file_cfg);
 
     /* -- 6. Public keys (env var default, config file priority) -- */
     /* Server public key (remote AWG server) */
@@ -393,6 +459,15 @@ int main(int argc, char *argv[]) {
                     0)
                     fatal("config [Peer]: too many peers (max 256)");
         }
+    }
+
+    /* -- 6b. Morph Mode: fail-closed + derive static params -- */
+    if (cfg->morph_enabled) {
+        if (morph_obfuscation_env_conflict() ||
+            (cfg_file_loaded && morph_obfuscation_file_conflict(&g_file_cfg)))
+            fatal("MorphKey: cannot be combined with explicit "
+                  "H1-H4/S1-S4/Jc/Jmin/Jmax parameters");
+        morph_derive_static(cfg, cfg->morph_key);
     }
 
     /* -- 7. Validate merged config -- */
@@ -496,9 +571,17 @@ int main(int argc, char *argv[]) {
     }
 
     /* -- 11. Startup log -- */
+    if (cfg->morph_enabled) {
+        char h4b[12], s4b[12];
+        const char *parts[] = {"morph: enabled H4=0x",
+                               u32_to_str(h4b, cfg->h4.min),
+                               " S4=", u32_to_str(s4b, cfg->s4)};
+        log_infon(parts, 4);
+    }
     {
         const char *mode_str =
-            cfg->s3 > 0 || cfg->s4 > 0 || cfg->h1.min != cfg->h1.max ||
+            cfg->morph_enabled ? "morph"
+            : cfg->s3 > 0 || cfg->s4 > 0 || cfg->h1.min != cfg->h1.max ||
                     cfg->h2.min != cfg->h2.max || cfg->h3.min != cfg->h3.max ||
                     cfg->h4.min != cfg->h4.max
                 ? "v2"

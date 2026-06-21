@@ -24,12 +24,18 @@ static inline uint32_t rotr32(uint32_t x, unsigned n) {
 }
 
 static inline uint32_t load32_le(const void *p) {
-    uint32_t v;
-    memcpy(&v, p, 4);
-    return v;
+    const uint8_t *b = p;
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) |
+           ((uint32_t)b[3] << 24);
 }
 
-static inline void store32_le(void *p, uint32_t v) { memcpy(p, &v, 4); }
+static inline void store32_le(void *p, uint32_t v) {
+    uint8_t *b = p;
+    b[0] = (uint8_t)v;
+    b[1] = (uint8_t)(v >> 8);
+    b[2] = (uint8_t)(v >> 16);
+    b[3] = (uint8_t)(v >> 24);
+}
 
 #define G(v, a, b, c, d, x, y)                                                 \
     do {                                                                       \

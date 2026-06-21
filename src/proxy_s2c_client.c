@@ -1,4 +1,5 @@
 #include "proxy_s2c_client.h"
+#include "morph.h"
 #include "log.h"
 #include "obfs.h"
 #include <string.h>
@@ -34,10 +35,17 @@ int proxy_s2c_process_client(proxy_t *p, uint8_t *pkt, int n,
     int s4 = cfg->s4;
     int unwrapped_len = 0;
     int marker_seen_before = p->obfs_s2c.marker_seen;
+    uint8_t marker_window_before = p->obfs_s2c.marker_rx_window;
     uint8_t *unwrapped = obfs_unwrap(&p->obfs_s2c, pkt, n, &unwrapped_len);
     if (!unwrapped) {
-        if (!marker_seen_before)
+        if (!marker_seen_before && !p->obfs_s2c.marker_seen) {
+            if (p->obfs_s2c.marker_rx_window == marker_window_before &&
+                p->obfs_s2c.marker_rx_window > 0)
+                p->obfs_s2c.marker_rx_window--;
             log_marker_reject_once(&p->obfs_s2c, "s2c");
+            if (p->obfs_s2c.marker_rx_window > 0)
+                return 0;
+        }
         p->obfs_fail_s2c++;
         if (should_log_obfs_fail(p->obfs_fail_s2c)) {
             char cb[12];
@@ -45,7 +53,7 @@ int proxy_s2c_process_client(proxy_t *p, uint8_t *pkt, int n,
                 "s2c: obfs unwrap failures=", u32_to_str(cb, p->obfs_fail_s2c),
                 " profile=", obfs_profile_name(cfg->obfs_profile),
                 " (remote likely plain AWG/WG or different obfs preset)"};
-            log_msgn("ERROR: ", parts, 6);
+            log_msgn("ERROR: ", parts, 5);
         }
         return 0;
     }
@@ -78,7 +86,11 @@ int proxy_s2c_process_client(proxy_t *p, uint8_t *pkt, int n,
     }
 
     int out_len;
-    uint8_t *out = transform_inbound(pkt, n, cfg, &out_len);
+    uint8_t *out;
+    if (cfg->morph_enabled)
+        out = morph_transform_inbound(&p->morph, pkt, n, &out_len);
+    else
+        out = transform_inbound(pkt, n, cfg, &out_len);
     if (!out) {
         log_debug("s2c: junk packet dropped");
         return 0;

@@ -15,6 +15,16 @@ static void test_parse_profile(void) {
     ASSERT_EQ(parse_obfs_profile("unknown"), AWG_OBFS_OFF);
 }
 
+static void test_parse_profile_strict(void) {
+    awg_obfs_profile_t profile = AWG_OBFS_OFF;
+    ASSERT_EQ(parse_obfs_profile_strict("off", &profile), 0);
+    ASSERT_EQ(profile, AWG_OBFS_OFF);
+    ASSERT_EQ(parse_obfs_profile_strict("DTLS_RECORD", &profile), 0);
+    ASSERT_EQ(profile, AWG_OBFS_DTLS_RECORD);
+    ASSERT_EQ(parse_obfs_profile_strict("typo", &profile), -1);
+    ASSERT_EQ(parse_obfs_profile_strict("", &profile), -1);
+}
+
 static void test_wrap_unwrap_passthrough(void) {
     obfs_session_t s;
     uint8_t pkt[32];
@@ -35,6 +45,31 @@ static void test_wrap_unwrap_passthrough(void) {
     ASSERT_EQ(s.rx_seq, (7u ^ 0x9e3779b97f4a7c15ULL) + 1u);
 }
 
+static void test_wrap_to_uses_caller_buffer(void) {
+    obfs_session_t tx, rx;
+    uint8_t packet[] = {1, 2, 3, 4, 5};
+    uint8_t first[64], second[64];
+    int first_len = 0, second_len = 0, plain_len = 0;
+
+    obfs_session_init(&tx, AWG_OBFS_DTLS_RECORD, 7);
+    obfs_session_init(&rx, AWG_OBFS_DTLS_RECORD, 7);
+    ASSERT(obfs_wrap_to(&tx, packet, sizeof(packet), first, sizeof(first),
+                        &first_len) == first);
+    ASSERT(obfs_wrap_to(&tx, packet, sizeof(packet), second, sizeof(second),
+                        &second_len) == second);
+    ASSERT_EQ(first_len, second_len);
+    ASSERT(memcmp(first, second, (size_t)first_len) != 0);
+
+    uint8_t *plain = obfs_unwrap(&rx, first, first_len, &plain_len);
+    ASSERT(plain != NULL);
+    ASSERT_EQ(plain_len, (int)sizeof(packet));
+    ASSERT_MEM_EQ(plain, packet, sizeof(packet));
+    plain = obfs_unwrap(&rx, second, second_len, &plain_len);
+    ASSERT(plain != NULL);
+    ASSERT_EQ(plain_len, (int)sizeof(packet));
+    ASSERT_MEM_EQ(plain, packet, sizeof(packet));
+}
+
 static void test_stun_roundtrip(void) {
     obfs_session_t tx, rx;
     uint8_t pkt[50];
@@ -53,7 +88,7 @@ static void test_stun_roundtrip(void) {
            wrapped[7] == 0x42);
     uint8_t *plain = obfs_unwrap(&rx, wrapped, out_len, &un_len);
     ASSERT(plain != NULL);
-    ASSERT(un_len >= 50);
+    ASSERT_EQ(un_len, 50);
     ASSERT_MEM_EQ(plain, pkt, 50);
 }
 
@@ -259,7 +294,9 @@ static void test_marker_window_rejects_plain_start(void) {
 
 int main(void) {
     RUN_TEST(parse_profile);
+    RUN_TEST(parse_profile_strict);
     RUN_TEST(wrap_unwrap_passthrough);
+    RUN_TEST(wrap_to_uses_caller_buffer);
     RUN_TEST(stun_roundtrip);
     RUN_TEST(dtls_roundtrip);
     RUN_TEST(rtp_roundtrip);

@@ -76,6 +76,10 @@ int load_obfuscation_env(awg_config_t *cfg, const char **err_msg);
  * Returns 0 on success. */
 int load_obfs_profile_env(awg_config_t *cfg);
 
+/* Apply wg2awg ObfsProfile from config file with priority over env. */
+void apply_file_obfs_profile_override(awg_config_t *cfg,
+                                      const awg_file_config_t *file_cfg);
+
 /* Load CPS templates AWG_I1..AWG_I5 from environment into provided storage.
  * On success assigns cfg->cps[i] for parsed templates.
  * Returns 0 on success, -1 on parse error and sets *err_msg. */
@@ -100,5 +104,19 @@ const char *select_dns_value(const char *env_dns, const char *file_dns,
  * Only fields marked by have_* flags are copied. */
 void apply_file_obfuscation_overrides(awg_config_t *cfg,
                                       const awg_file_config_t *file_cfg);
+
+/* Load AWG_MORPH_KEY or AWG_MORPH_KEY_FILE from environment.
+ * Sets cfg->morph_enabled and cfg->morph_key on success.
+ * Returns 0 if no morph key env var is set, 1 if key was loaded,
+ * -1 on parse/IO error (sets *err_msg). */
+int load_morph_key_env(awg_config_t *cfg, const char **err_msg);
+
+/* Apply MorphKey from config file if have_morph_key is set. */
+void apply_file_morph_override(awg_config_t *cfg,
+                               const awg_file_config_t *file_cfg);
+
+/* Return non-zero when Morph Mode conflicts with explicit H/S/J settings. */
+int morph_obfuscation_env_conflict(void);
+int morph_obfuscation_file_conflict(const awg_file_config_t *file_cfg);
 
 #endif

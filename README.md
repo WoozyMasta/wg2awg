@@ -222,12 +222,17 @@ Extra key precedence rules:
 * `AWG_PRIVATE_KEY` derives `AWG_CLIENT_PUB`.
 * If both are set, explicit `AWG_CLIENT_PUB` wins.
 * If config file has `PrivateKey`, it overrides env-derived client key.
+* Morph key priority is `MorphKey` in config,
+  then `AWG_MORPH_KEY_FILE`, then `AWG_MORPH_KEY`.
+* `ObfsProfile` in config overrides `AWG_OBFS_PROFILE`.
 
 ### Config File Support
 
 Input format: WireGuard/AmneziaWG INI-style file.
 
 `[Interface]` fields parsed:
+
+Standard WireGuard/AmneziaWG fields:
 
 * `PrivateKey` -> derives client public key.
 * `ListenPort` -> converted to `0.0.0.0:<port>`.
@@ -236,6 +241,11 @@ Input format: WireGuard/AmneziaWG INI-style file.
   `S1`, `S2`, `S3`, `S4`,
   `H1`, `H2`, `H3`, `H4`,
   `I1`, `I2`, `I3`, `I4`, `I5`.
+
+**wg2awg-only** extension:
+
+* `MorphKey`.
+* `ObfsProfile`.
 
 `[Peer]` fields parsed:
 
@@ -260,6 +270,9 @@ Important parser nuance:
 * `-r`, `--remote <host:port>`: override `AWG_REMOTE`.
 * `-s`, `--src-port <auto|port>`: override `AWG_SRC_PORT`.
 * `-l`, `--log-level <none|error|info|debug>`: override `AWG_LOG_LEVEL`.
+* `-g`, `--gen-morph-key`: generate a base64-encoded 32-byte Morph key.
+* `-P`, `--morph-probe <key> [-S, --slot N]`:
+  print deterministic parameters derived from a base64 or hexadecimal key.
 * `-h`, `--help`: print help.
 * `-v`, `--version`: print version.
 
@@ -331,7 +344,10 @@ The config file has higher priority than environment variables.
 * `AWG_CONFIG`
   Path to INI config file. Equivalent to `-c`.
 
-#### AWG Framing and Obfuscation Parameters
+#### AmneziaWG Framing Parameters
+
+The following `Jc`, `Jmin`, `Jmax`, `S1..S4`, `H1..H4`, and `I1..I5`
+parameters belong to the AmneziaWG protocol.
 
 * `AWG_JC`
   Number of junk UDP packets sent before an outbound handshake-init.
@@ -364,14 +380,129 @@ The config file has higher priority than environment variables.
   `<rd N>` random digits, `<t>` unix timestamp (be32), `<c>` counter (be32).
   Example: `<b 0x48656c6c6f><r 8><t><c>`.
 
-#### Proxy-to-Proxy Outer Obfuscation
-
-`AWG_OBFS_PROFILE` option enables an additional external layer
-of traffic obfuscation.
+#### Morph Extension
 
 > [!NOTE]
-> Works only in the `wg2awg <-> wg2awg` configuration;
+> **Morph Extension** works only in the `wg2awg <-> wg2awg` configuration;
 > the same profile must be enabled on both sides.
+
+Morph derives AmneziaWG-compatible framing parameters from one shared 32-byte
+key. `H1..H3`, `S1..S3`, and junk parameters change every 120-second slot.
+`H4` and `S4` remain stable for the process lifetime,
+so transport traffic continues across slot changes.
+Inbound handshakes accept the previous, current,
+and next slots to tolerate clock skew.
+
+##### Setup and verification
+
+> [!IMPORTANT]
+> Morph is an extension implemented only by wg2awg.
+> It is not part of WireGuard or AmneziaWG,
+> and native AmneziaWG implementations do not understand `MorphKey`.
+
+Generate one key on either endpoint:
+
+```bash
+MORPH_KEY="$(wg2awg --gen-morph-key)"
+printf '%s\n' "$MORPH_KEY"
+```
+
+Copy that exact key to the wg2awg config on both proxy endpoints:
+
+```ini
+[Interface]
+PrivateKey = <WireGuard private key>
+Address = 10.0.0.1/24
+
+# wg2awg-only extension. Use the same value on both proxy endpoints.
+MorphKey = <output of wg2awg --gen-morph-key>
+```
+
+Do not configure `Jc`, `Jmin`, `Jmax`, `S1..S4`, or `H1..H4`
+together with `MorphKey`:
+Morph derives them automatically and wg2awg rejects such a mixed configuration.
+
+Before starting the proxies,
+inspect the derivation and note the reported current `Slot`:
+
+```bash
+wg2awg --morph-probe "$MORPH_KEY"
+```
+
+Then use that same slot number on both endpoints:
+
+```bash
+wg2awg --morph-probe "$MORPH_KEY" --slot <reported-slot>
+# Short form:
+wg2awg -P "$MORPH_KEY" -S <reported-slot>
+```
+
+The complete fixed-slot output, including `Static`, `H1..H3`, `S1..S3`,
+and junk parameters, must match on both endpoints.
+If it does not, the endpoints do not use the same key or binary implementation.
+
+The slot is `floor(Unix time / 120)`:
+a numeric index of the current 120-second interval.
+It is not a peer ID, port, secret, or config-file field.
+Do not add it to the WireGuard/AmneziaWG config.
+During normal operation, wg2awg selects and updates
+the current slot automatically.
+`--slot` only overrides the slot used by `--morph-probe`,
+so two hosts can produce
+a reproducible diagnostic result independent of command timing.
+
+Configuration options:
+
+* `AWG_MORPH_KEY`: inline 44-character base64 or 64-character hexadecimal key.
+* `AWG_MORPH_KEY_FILE`: file containing a base64 key.
+* `MorphKey` in `[Interface]`: base64 key with highest priority.
+
+The `AWG_` prefix in these environment variable names is retained
+only for wg2awg configuration compatibility.
+It does not make Morph part of AmneziaWG.
+
+Morph fails closed when any explicit `Jc`, `Jmin`, `Jmax`, `S1..S4`,
+or `H1..H4` value is also configured through environment variables
+or the config file. AmneziaWG CPS `I1..I5` remains compatible with Morph.
+
+#### Proxy-to-Proxy Outer Obfuscation Extension
+
+> [!NOTE]
+> **Outer Obfuscation** works only in the `wg2awg <-> wg2awg` configuration;
+> the same profile must be enabled on both sides.
+
+`AWG_OBFS_PROFILE` enables
+an additional external layer of traffic obfuscation.
+
+Unlike AmneziaWG CPS `I1..I5`,
+an outer profile is not a configurable packet template:
+
+* CPS lets the operator define up to five custom packets from fixed bytes,
+  random fields, timestamps, and counters.
+  They are sent before a handshake initiation.
+  A CPS template can be made protocol-like,
+  but its layout and field behavior must be designed and configured manually.
+* `ObfsProfile` selects a built-in, non-configurable protocol preset.
+  wg2awg applies that preset to the actual handshake, cookie,
+  and transport packets in both directions.
+  The preset maintains protocol-like changing fields such as sequence numbers,
+  timestamps, identifiers, header lengths, and padding where applicable.
+
+Therefore CPS is more flexible for constructing custom pre-handshake packets,
+while `ObfsProfile` provides broader coverage
+and consistent per-packet behavior without designing a template.
+CPS and AmneziaWG junk packets remain separate packets
+and are not wrapped by `ObfsProfile`; the two mechanisms can be used together.
+
+The same wg2awg-only setting can be stored in the config file:
+
+```ini
+[Interface]
+ObfsProfile = dtls_record
+```
+
+`ObfsProfile` has priority over `AWG_OBFS_PROFILE`.
+Unknown config values are rejected instead of silently falling back to `off`.
 
 * `off`: no outer wrapper, minimum overhead.
 * `stun_ice`: STUN-like envelope with small size jitter.
@@ -388,6 +519,8 @@ of traffic obfuscation.
 > [!IMPORTANT]
 > This is not AmneziaWG framing and is incompatible
 > with direct WireGuard/AmneziaWG nodes.
+> The profiles mimic selected packet formats and field dynamics;
+> they do not implement the real DTLS, RTP, QUIC, DNS, or game protocol.
 
 #### Reconnect and Runtime Behavior
 
@@ -630,7 +763,8 @@ make check-local
 
 * `make test`: fast unit and component coverage.
 * `make test-hardening`: fuzz-style parser/property checks,
-  sanitizer runs (ASAN and UBSAN), and integration smoke scenarios.
+  ASAN/UBSAN/TSAN runs, Morph slot-rollover coverage, and integration smoke
+  scenarios.
 * `make test-stress`: long/high-load networking behavior checks.
 * `make check-local`: full local gate
   (`fmt-check` + `lint` + `test` + `test-hardening` + `test-stress`).

@@ -62,10 +62,26 @@ static void test_decode_invalid(void) {
               -1);
 }
 
+static void test_encode_roundtrip(void) {
+    uint8_t input[32];
+    uint8_t decoded[32];
+    char encoded[45];
+
+    for (int i = 0; i < 32; i++)
+        input[i] = (uint8_t)i;
+
+    ASSERT_EQ(base64_encode(input, sizeof(input), encoded), 44);
+    ASSERT_EQ(strlen(encoded), 44u);
+    ASSERT_EQ(base64_decode(encoded, strlen(encoded), decoded, sizeof(decoded)),
+              32);
+    ASSERT_MEM_EQ(decoded, input, sizeof(input));
+}
+
 int main(void) {
     fprintf(stderr, "=== base64 tests ===\n");
     RUN_TEST(decode_valid);
     RUN_TEST(decode_padding);
     RUN_TEST(decode_invalid);
+    RUN_TEST(encode_roundtrip);
     TEST_MAIN_END();
 }
