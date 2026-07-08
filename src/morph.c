@@ -14,6 +14,14 @@
 
 #define MORPH_WRITER_LOCK UINT_MAX
 
+/* Best-effort clear of key material in stack buffers before returning.
+ * volatile pointer prevents the compiler from optimizing the writes away. */
+static void morph_memzero(void *p, size_t n) {
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--)
+        *v++ = 0;
+}
+
 static uint32_t read_u32_le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
            ((uint32_t)p[3] << 24);
@@ -23,12 +31,19 @@ static uint16_t read_u16_le(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
-/* Map an arbitrary uint32 into the valid H range [0x00010000, 0xFFFEFFFF].
- * This range avoids WireGuard reserved type bytes (0-4 in the low byte). */
+/* Map an arbitrary uint32 into the numeric H range [0x00010000, 0xFFFEFFFF].
+ * Does NOT by itself exclude WireGuard reserved type bytes in the low byte -
+ * callers must reject via h_is_valid() and resample. */
 static uint32_t h_map_range(uint32_t x) {
     const uint32_t lo = 0x00010000u;
     const uint64_t span = (uint64_t)0xFFFEFFFFu - lo + 1u;
     return lo + (uint32_t)((uint64_t)x % span);
+}
+
+/* True if v is in the numeric H range and its low byte doesn't look like a
+ * WireGuard reserved message type (0-4). */
+static int h_is_valid(uint32_t v) {
+    return v >= 0x00010000u && v <= 0xfffeffffu && (v & 0xffu) > 4u;
 }
 
 /* Derive an H value that doesn't collide with any previously derived values.
@@ -39,8 +54,8 @@ static uint32_t derive_h(const uint8_t *slot_key, int off, const uint32_t *prev,
     for (uint32_t c = 0;; c++) {
         uint32_t tmp = base ^ (c * 0x9E3779B9u);
         uint32_t v = h_map_range(tmp);
-        if (v < 5)
-            continue; /* extra guard: skip WG reserved type values */
+        if (!h_is_valid(v))
+            continue; /* skip WG reserved type values */
         int dup = 0;
         for (int i = 0; i < nprev; i++)
             if (prev[i] == v) {
@@ -48,6 +63,19 @@ static uint32_t derive_h(const uint8_t *slot_key, int off, const uint32_t *prev,
                 break;
             }
         if (!dup)
+            return v;
+    }
+}
+
+/* Derive the static H4 value from the static-key material.
+ * Used both for the real cfg->h4 (morph_derive_static) and, identically,
+ * to seed collision avoidance for H1..H3 (morph_derive_profile) -
+ * both call sites must agree bit-for-bit. */
+static uint32_t derive_static_h4(const uint8_t static_key[32]) {
+    uint32_t base = read_u32_le(static_key);
+    for (uint32_t c = 0;; c++) {
+        uint32_t v = h_map_range(base ^ (c * 0x9E3779B9u));
+        if (h_is_valid(v))
             return v;
     }
 }
@@ -106,11 +134,10 @@ uint64_t morph_current_slot(void) {
 void morph_derive_static(awg_config_t *cfg, const uint8_t key[MORPH_KEY_LEN]) {
     uint8_t sk[32];
     kdf_static(sk, key);
-    uint32_t h4 = h_map_range(read_u32_le(sk));
-    if (h4 < 5)
-        h4 += 5; /* belt-and-suspenders */
+    uint32_t h4 = derive_static_h4(sk);
     cfg->h4.min = cfg->h4.max = h4;
     cfg->s4 = (int)(read_u16_le(sk + 4) % 256);
+    morph_memzero(sk, sizeof(sk));
 }
 
 void morph_derive_profile(morph_profile_t *out,
@@ -122,7 +149,7 @@ void morph_derive_profile(morph_profile_t *out,
 
     /* H1/H2/H3 must not overlap each other or the static H4. */
     uint32_t hs[4];
-    hs[0] = h_map_range(read_u32_le(static_key));
+    hs[0] = derive_static_h4(static_key);
     hs[1] = derive_h(sk, 0, hs, 1);
     hs[2] = derive_h(sk, 4, hs, 2);
     hs[3] = derive_h(sk, 8, hs, 3);
@@ -141,6 +168,27 @@ void morph_derive_profile(morph_profile_t *out,
     out->init_total = out->s1 + WG_INIT_SIZE;
     out->resp_total = out->s2 + WG_RESP_SIZE;
     out->cookie_total = out->s3 + WG_COOKIE_SIZE;
+
+    morph_memzero(sk, sizeof(sk));
+    morph_memzero(static_key, sizeof(static_key));
+}
+
+/* Derive the 5 profiles/configs (current +/- 2 slots) for a snapshot,
+ * clamping slot numbers below 0 to 0 (uint64_t, so avoid underflow). */
+static void derive_snapshot(morph_snapshot_t *s, const awg_config_t *base_cfg,
+                            const uint8_t key[MORPH_KEY_LEN],
+                            uint64_t slot) {
+    static const int offset[MORPH_NUM_SLOTS] = {-2, -1, 0, 1, 2};
+    s->slot = slot;
+    for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
+        uint64_t s_num;
+        if (offset[i] < 0 && slot < (uint64_t)(-offset[i]))
+            s_num = 0;
+        else
+            s_num = slot + (uint64_t)offset[i];
+        morph_derive_profile(&s->profiles[i], key, s_num);
+        s->cfgs[i] = cfg_from_profile(base_cfg, &s->profiles[i]);
+    }
 }
 
 void morph_state_init_slot(morph_state_t *ms, const awg_config_t *base_cfg,
@@ -150,15 +198,7 @@ void morph_state_init_slot(morph_state_t *ms, const awg_config_t *base_cfg,
     atomic_init(&ms->readers[1], 0);
     atomic_store_explicit(&ms->active_idx, 0, memory_order_relaxed);
 
-    morph_snapshot_t *s = &ms->snap[0];
-    s->slot = slot;
-
-    morph_derive_profile(&s->profiles[0], key, slot > 0 ? slot - 1 : 0);
-    morph_derive_profile(&s->profiles[1], key, slot);
-    morph_derive_profile(&s->profiles[2], key, slot + 1);
-    s->cfgs[0] = cfg_from_profile(base_cfg, &s->profiles[0]);
-    s->cfgs[1] = cfg_from_profile(base_cfg, &s->profiles[1]);
-    s->cfgs[2] = cfg_from_profile(base_cfg, &s->profiles[2]);
+    derive_snapshot(&ms->snap[0], base_cfg, key, slot);
 }
 
 void morph_state_init(morph_state_t *ms, const awg_config_t *base_cfg,
@@ -185,16 +225,8 @@ int morph_update_slot(morph_state_t *ms, const awg_config_t *base_cfg,
         sched_yield();
     }
 
-    morph_snapshot_t *s = &ms->snap[nxt];
-    s->slot = now_slot;
-
     /* Derive all slots: wall-clock jumps may skip or move slots. */
-    morph_derive_profile(&s->profiles[0], key, now_slot > 0 ? now_slot - 1 : 0);
-    morph_derive_profile(&s->profiles[1], key, now_slot);
-    morph_derive_profile(&s->profiles[2], key, now_slot + 1);
-    s->cfgs[0] = cfg_from_profile(base_cfg, &s->profiles[0]);
-    s->cfgs[1] = cfg_from_profile(base_cfg, &s->profiles[1]);
-    s->cfgs[2] = cfg_from_profile(base_cfg, &s->profiles[2]);
+    derive_snapshot(&ms->snap[nxt], base_cfg, key, now_slot);
 
     atomic_store_explicit(&ms->active_idx, nxt, memory_order_release);
     atomic_store_explicit(&ms->readers[nxt], 0, memory_order_release);
@@ -240,7 +272,7 @@ void morph_snapshot_release(morph_state_t *ms, int idx) {
 
 int morph_handshake_length_candidate(const morph_snapshot_t *snapshot,
                                      int len) {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
         const morph_profile_t *p = &snapshot->profiles[i];
         if (len == p->init_total || len == p->resp_total ||
             len == p->cookie_total)
@@ -253,11 +285,11 @@ uint8_t *morph_transform_inbound(morph_state_t *ms, uint8_t *buf, int len,
                                  int *out_len) {
     int idx = morph_snapshot_acquire(ms);
     const morph_snapshot_t *s = &ms->snap[idx];
-    /* Try curr first (most likely), then prev, then next. */
-    static const int order[3] = {1, 0, 2};
+    /* Try curr first (most likely), then +/-1, then +/-2. */
+    static const int order[MORPH_NUM_SLOTS] = {2, 1, 3, 0, 4};
 
     if (morph_handshake_length_candidate(s, len)) {
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
             const morph_profile_t *p = &s->profiles[order[i]];
             if (len != p->init_total && len != p->resp_total &&
                 len != p->cookie_total)
@@ -272,7 +304,7 @@ uint8_t *morph_transform_inbound(morph_state_t *ms, uint8_t *buf, int len,
     }
 
     /* H4/S4 are static, so the current config can decode transport packets. */
-    uint8_t *r = transform_inbound(buf, len, &s->cfgs[1], out_len);
+    uint8_t *r = transform_inbound(buf, len, &s->cfgs[2], out_len);
     morph_snapshot_release(ms, idx);
     if (r)
         return r;
@@ -336,6 +368,30 @@ void morph_gen_key(void) {
     char b64[48];
     base64_encode(key, MORPH_KEY_LEN, b64);
     puts(b64);
+    morph_memzero(key, sizeof(key));
+    morph_memzero(b64, sizeof(b64));
+}
+
+/* Non-reversible fingerprint for comparing endpoints without exposing key:
+ * BLAKE2s-256("wg2awg morph fingerprint v1" || key),
+ * first 8 bytes printed as hex. */
+static void morph_key_fingerprint(const uint8_t key[MORPH_KEY_LEN],
+                                  char out_hex[17]) {
+    static const char ctx[] = "wg2awg morph fingerprint v1";
+    enum { CTX_LEN = sizeof(ctx) - 1 };
+    uint8_t buf[CTX_LEN + MORPH_KEY_LEN];
+    uint8_t digest[32];
+    memcpy(buf, ctx, CTX_LEN);
+    memcpy(buf + CTX_LEN, key, MORPH_KEY_LEN);
+    blake2s_256(buf, sizeof(buf), digest);
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) {
+        out_hex[i * 2] = hexd[digest[i] >> 4];
+        out_hex[i * 2 + 1] = hexd[digest[i] & 0xf];
+    }
+    out_hex[16] = '\0';
+    morph_memzero(buf, sizeof(buf));
+    morph_memzero(digest, sizeof(digest));
 }
 
 void morph_probe(const char *key_str, int64_t slot_override) {
@@ -357,12 +413,11 @@ void morph_probe(const char *key_str, int64_t slot_override) {
     morph_profile_t prof;
     morph_derive_profile(&prof, key, slot);
 
-    /* Print key prefix (first 12 chars of base64) */
-    char b64[48];
-    base64_encode(key, MORPH_KEY_LEN, b64);
-    b64[12] = '\0';
+    char fp[17];
+    morph_key_fingerprint(key, fp);
+    morph_memzero(key, sizeof(key));
 
-    printf("Morph probe (key: %s...)\n", b64);
+    printf("Morph probe (fingerprint: %s)\n", fp);
     printf("Static:  H4=0x%08X  S4=%d\n", tmp_cfg.h4.min, tmp_cfg.s4);
     printf("Slot:    %llu  (slot_sec=%d)\n", (unsigned long long)slot,
            MORPH_SLOT_SEC);

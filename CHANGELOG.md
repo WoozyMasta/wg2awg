@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning][].
 
 * Add Morph Mode with per-slot handshake obfuscation derived from a shared
   `MorphKey`, including config/env loading, `-g` key generation, and `-P`
-  probe CLI with `-S` slot override.
+  probe CLI with `-S` slot override. Inbound handshakes accept the current
+  slot +/-2 (5 slots total), guaranteeing at least +/-240s of clock-skew
+  tolerance.
 * Add wg2awg-only `[Interface].ObfsProfile` config support.
 
 ### Fixed

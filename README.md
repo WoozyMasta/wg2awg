@@ -384,14 +384,16 @@ parameters belong to the AmneziaWG protocol.
 
 > [!NOTE]
 > **Morph Extension** works only in the `wg2awg <-> wg2awg` configuration;
-> the same profile must be enabled on both sides.
+> the same `MorphKey` must be configured on both endpoints.
 
 Morph derives AmneziaWG-compatible framing parameters from one shared 32-byte
 key. `H1..H3`, `S1..S3`, and junk parameters change every 120-second slot.
 `H4` and `S4` remain stable for the process lifetime,
-so transport traffic continues across slot changes.
-Inbound handshakes accept the previous, current,
-and next slots to tolerate clock skew.
+so transport traffic continues across slot changes.  
+Inbound handshakes accept the current slot plus the two slots on either side
+(5 slots total) to tolerate clock skew, guaranteeing at least +/-240 seconds
+of tolerance regardless of receiver phase within its own slot
+(comfortably covering WireGuard's +/-180 second clock-skew target).
 
 ##### Setup and verification
 
@@ -437,9 +439,11 @@ wg2awg --morph-probe "$MORPH_KEY" --slot <reported-slot>
 wg2awg -P "$MORPH_KEY" -S <reported-slot>
 ```
 
-The complete fixed-slot output, including `Static`, `H1..H3`, `S1..S3`,
-and junk parameters, must match on both endpoints.
+The complete fixed-slot output, including the key `fingerprint`, `Static`,
+`H1..H3`, `S1..S3`, and junk parameters, must match on both endpoints.
 If it does not, the endpoints do not use the same key or binary implementation.
+The fingerprint is a one-way hash of the key (not the key itself),
+so it can be compared safely without exposing key material.
 
 The slot is `floor(Unix time / 120)`:
 a numeric index of the current 120-second interval.

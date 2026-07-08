@@ -61,6 +61,8 @@ static void test_derivation_vector(void) {
 
 static void test_profile_ranges_and_collisions(void) {
     awg_config_t base = make_base_config();
+    ASSERT(base.h4.min >= 0x00010000u && base.h4.min <= 0xfffeffffu);
+    ASSERT((base.h4.min & 0xffu) > 4u);
 
     for (uint64_t slot = 0; slot < 10000; slot++) {
         morph_profile_t p;
@@ -70,6 +72,9 @@ static void test_profile_ranges_and_collisions(void) {
         ASSERT(p.h1.min >= 0x00010000u && p.h1.min <= 0xfffeffffu);
         ASSERT(p.h2.min >= 0x00010000u && p.h2.min <= 0xfffeffffu);
         ASSERT(p.h3.min >= 0x00010000u && p.h3.min <= 0xfffeffffu);
+        ASSERT((p.h1.min & 0xffu) > 4u);
+        ASSERT((p.h2.min & 0xffu) > 4u);
+        ASSERT((p.h3.min & 0xffu) > 4u);
         ASSERT(p.h1.min != p.h2.min);
         ASSERT(p.h1.min != p.h3.min);
         ASSERT(p.h2.min != p.h3.min);
@@ -117,14 +122,81 @@ static void test_clock_skew_handshake_roundtrip(void) {
     morph_state_init(&ms, &base, test_key);
 
     int idx = morph_snapshot_acquire(&ms);
-    awg_config_t cfgs[3];
+    awg_config_t cfgs[MORPH_NUM_SLOTS];
     memcpy(cfgs, ms.snap[idx].cfgs, sizeof(cfgs));
     morph_snapshot_release(&ms, idx);
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
         assert_roundtrip(&ms, &cfgs[i], WG_HANDSHAKE_INIT, WG_INIT_SIZE);
         assert_roundtrip(&ms, &cfgs[i], WG_HANDSHAKE_RESPONSE, WG_RESP_SIZE);
         assert_roundtrip(&ms, &cfgs[i], WG_COOKIE_REPLY, WG_COOKIE_SIZE);
+    }
+}
+
+/* Actually simulate asymmetric clock skew (unlike the round-trip test above,
+ * which only replays a receiver's own precomputed profiles against itself).
+ * Receiver is pinned at slot N with local phase t in [0,119] seconds into
+ * that slot. Sender's clock is offset by `skew_sec` seconds and derives its
+ * own slot from (N*120 + t + skew_sec). A packet built with the sender's
+ * profile must decode iff the sender's slot falls within [N-2, N+2]. */
+static void test_clock_skew_boundaries(void) {
+    awg_config_t base = make_base_config();
+    const uint64_t recv_slot = 100000;
+
+    static const int phases[] = {0, 1, 60, 118, 119};
+    static const int skews[] = {-241, -240, -180, -121, -120, -1, 0,
+                                1,    120,  121,  180,  240,  241};
+
+    for (size_t pi = 0; pi < sizeof(phases) / sizeof(phases[0]); pi++) {
+        int t = phases[pi];
+        morph_state_t ms;
+        memset(&ms, 0, sizeof(ms));
+        morph_state_init_slot(&ms, &base, test_key, recv_slot);
+
+        for (size_t si = 0; si < sizeof(skews) / sizeof(skews[0]); si++) {
+            int64_t sender_time =
+                (int64_t)(recv_slot * MORPH_SLOT_SEC) + t + skews[si];
+            uint64_t sender_slot =
+                (uint64_t)(sender_time / MORPH_SLOT_SEC);
+            int64_t delta = (int64_t)sender_slot - (int64_t)recv_slot;
+            int should_accept = delta >= -2 && delta <= 2;
+
+            morph_profile_t sender_prof;
+            morph_derive_profile(&sender_prof, test_key, sender_slot);
+            awg_config_t sender_cfg = base;
+            sender_cfg.h1 = sender_prof.h1;
+            sender_cfg.h2 = sender_prof.h2;
+            sender_cfg.h3 = sender_prof.h3;
+            sender_cfg.s1 = sender_prof.s1;
+            sender_cfg.s2 = sender_prof.s2;
+            sender_cfg.s3 = sender_prof.s3;
+            sender_cfg.jc = sender_prof.jc;
+            sender_cfg.jmin = sender_prof.jmin;
+            sender_cfg.jmax = sender_prof.jmax;
+            config_compute(&sender_cfg);
+
+            uint8_t buf[AWG_PACKET_BUF_SIZE + AWG_PACKET_HEADROOM];
+            const int dataoff = AWG_PACKET_HEADROOM;
+            memset(buf, 0xa5, sizeof(buf));
+            uint32_t type = WG_HANDSHAKE_INIT;
+            memcpy(buf + dataoff, &type, sizeof(type));
+            int encoded_len = 0;
+            int send_junk = 0;
+            uint8_t *encoded =
+                transform_outbound(buf, dataoff, WG_INIT_SIZE, &sender_cfg,
+                                   0x12345678, &encoded_len, &send_junk);
+
+            int decoded_len = 0;
+            uint8_t *decoded =
+                morph_transform_inbound(&ms, encoded, encoded_len, &decoded_len);
+
+            if (should_accept) {
+                ASSERT(decoded != NULL);
+                ASSERT_EQ(decoded_len, WG_INIT_SIZE);
+            } else {
+                ASSERT(decoded == NULL);
+            }
+        }
     }
 }
 
@@ -170,7 +242,7 @@ static void test_length_prefilter(void) {
         ASSERT(!morph_handshake_length_candidate(snapshot, len));
         rejected++;
     }
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
         ASSERT(morph_handshake_length_candidate(
             snapshot, snapshot->profiles[i].init_total));
         ASSERT(morph_handshake_length_candidate(
@@ -198,18 +270,24 @@ static void *update_thread(void *arg) {
 
 static void *read_thread(void *arg) {
     concurrency_ctx_t *ctx = arg;
+    static const int offset[MORPH_NUM_SLOTS] = {-2, -1, 0, 1, 2};
     do {
         int idx = morph_snapshot_acquire(&ctx->ms);
         const morph_snapshot_t *s = &ctx->ms.snap[idx];
-        int invalid = s->profiles[0].slot != (s->slot > 0 ? s->slot - 1 : 0) ||
-                      s->profiles[1].slot != s->slot ||
-                      s->profiles[2].slot != s->slot + 1 ||
-                      s->cfgs[1].h1.min != s->profiles[1].h1.min ||
-                      s->cfgs[1].h2.min != s->profiles[1].h2.min ||
-                      s->cfgs[1].h3.min != s->profiles[1].h3.min ||
-                      s->cfgs[1].s1 != s->profiles[1].s1 ||
-                      s->cfgs[1].s2 != s->profiles[1].s2 ||
-                      s->cfgs[1].s3 != s->profiles[1].s3;
+        int invalid = 0;
+        for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
+            uint64_t expect = (offset[i] < 0 && s->slot < (uint64_t)(-offset[i]))
+                                  ? 0
+                                  : s->slot + (uint64_t)offset[i];
+            if (s->profiles[i].slot != expect)
+                invalid = 1;
+        }
+        invalid = invalid || s->cfgs[2].h1.min != s->profiles[2].h1.min ||
+                  s->cfgs[2].h2.min != s->profiles[2].h2.min ||
+                  s->cfgs[2].h3.min != s->profiles[2].h3.min ||
+                  s->cfgs[2].s1 != s->profiles[2].s1 ||
+                  s->cfgs[2].s2 != s->profiles[2].s2 ||
+                  s->cfgs[2].s3 != s->profiles[2].s3;
         morph_snapshot_release(&ctx->ms, idx);
         if (invalid)
             atomic_store_explicit(&ctx->failed, 1, memory_order_relaxed);
@@ -243,6 +321,7 @@ int main(void) {
     RUN_TEST(derivation_vector);
     RUN_TEST(profile_ranges_and_collisions);
     RUN_TEST(clock_skew_handshake_roundtrip);
+    RUN_TEST(clock_skew_boundaries);
     RUN_TEST(transport_roundtrip);
     RUN_TEST(random_packets_rejected);
     RUN_TEST(length_prefilter);

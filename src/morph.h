@@ -7,7 +7,11 @@
 #include <pthread.h>
 
 /* Slot duration matches WireGuard REKEY_AFTER_TIME (120 s).
- * Three slots (prev/curr/next) cover the full ±180 s WG clock-skew window. */
+ * Five slots (current +/- 2) guarantee at least +/-240 s of clock-skew
+ * tolerance regardless of receiver phase within its own slot,
+ * comfortably covering the +/-180 s WG clock-skew target.
+ * Three slots only guarantee +/-120 s in the worst case
+ * (receiver phase near a slot boundary). */
 #ifndef MORPH_SLOT_SEC
 #define MORPH_SLOT_SEC 120
 #endif
@@ -30,12 +34,14 @@ typedef struct {
     int cookie_total; /* s3 + WG_COOKIE_SIZE */
 } morph_profile_t;
 
-/* One atomic snapshot: prev/curr/next profiles + precomputed awg_config_t
- * copies. */
+/* One atomic snapshot: 5 profiles (current +/- 2 slots) + precomputed
+ * awg_config_t copies. */
+#define MORPH_NUM_SLOTS 5
 typedef struct {
     uint64_t slot;
-    morph_profile_t profiles[3]; /* [0]=prev [1]=curr [2]=next */
-    awg_config_t cfgs[3];        /* precomputed, updated atomically */
+    morph_profile_t profiles[MORPH_NUM_SLOTS]; /* [0]=N-2 [1]=N-1 [2]=N
+                                                   [3]=N+1 [4]=N+2 */
+    awg_config_t cfgs[MORPH_NUM_SLOTS]; /* precomputed, updated atomically */
 } morph_snapshot_t;
 
 /* Double-buffer state for lock-free reads from hot I/O threads. */
