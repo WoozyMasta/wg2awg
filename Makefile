@@ -5,7 +5,7 @@ BUILD_DIR   = build
 SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/cps.c \
   src/fastrand.c src/base64.c src/log.c src/net_addr.c src/net_sock.c \
   src/curve25519.c src/config_file.c src/config_runtime.c src/session_table.c \
-  src/obfs.c \
+  src/obfs.c src/morph.c \
   src/proxy_io_batch.c src/proxy_emit.c src/proxy_s2c_client.c \
   src/proxy_s2c_gateway.c src/proxy_c2s_client.c src/proxy_c2s_gateway.c \
   src/proxy_reconnect.c src/proxy_startup.c src/proxy_control.c \
@@ -26,6 +26,9 @@ ASAN_TEST_LDFLAGS   = -fsanitize=address
 UBSAN_TEST_CFLAGS   = $(TEST_CFLAGS) -O1 -fno-omit-frame-pointer \
                       -fsanitize=undefined -fno-sanitize-recover=all
 UBSAN_TEST_LDFLAGS  = -fsanitize=undefined
+TSAN_TEST_CFLAGS    = $(TEST_CFLAGS) -O1 -fno-omit-frame-pointer \
+                      -fsanitize=thread
+TSAN_TEST_LDFLAGS   = -fsanitize=thread
 
 SANITIZER_CC  ?= gcc
 CLANG_FORMAT  ?= clang-format
@@ -83,8 +86,21 @@ build:
 
 container-build-matrix: $(addprefix container-build-,$(ALL_ARCHS))
 
+E2E_IMAGE ?= wg2awg-e2e
+
+.PHONY: test-e2e-image test-e2e test-e2e-fast
 .PHONY: check-local container-check container-test container-check-image container-lint
 .PHONY: container-test-matrix
+
+test-e2e-image:
+	docker build -t $(E2E_IMAGE) -f tests/e2e/Dockerfile \
+		--build-arg WGAWG_BINARY=build/wg2awg .
+
+test-e2e: test-e2e-image
+	bash tests/e2e/run.sh
+
+test-e2e-fast: test-e2e-image
+	E2E_FAST=1 bash tests/e2e/run.sh
 
 check-local: fmt-check lint test test-hardening test-stress
 	@echo "Local CI checks passed"
@@ -130,12 +146,12 @@ fmt-check:
 lint:
 	$(CLANG_TIDY) -quiet -header-filter='^src/' $(SRCS) -- -std=c11 -D_GNU_SOURCE -Isrc
 
-.PHONY: test test-stress test-integration test-asan test-ubsan test-hardening
+.PHONY: test test-stress test-integration test-morph-rollover test-asan test-ubsan test-tsan test-hardening
 .PHONY: test-blake2s test-cps test-transform test-base64 test-session \
         test-curve25519 test-config-file test-config-runtime test-obfs test-net-addr \
-        test-net-sock test-session-table test-net-addr-fuzz test-cps-fuzz
+        test-net-sock test-session-table test-morph test-net-addr-fuzz test-cps-fuzz
 
-test: test-blake2s test-cps test-transform test-base64 test-session test-curve25519 test-config-file test-config-runtime test-obfs test-net-addr test-net-sock test-session-table
+test: test-blake2s test-cps test-transform test-base64 test-session test-curve25519 test-config-file test-config-runtime test-obfs test-net-addr test-net-sock test-session-table test-morph
 	@echo "All tests passed"
 
 test-blake2s: src/test_blake2s.c $(TEST_SRCS)
@@ -186,13 +202,23 @@ test-session-table: src/test_session_table.c src/session_table.c
 	$(CC) $(TEST_CFLAGS) $(TEST_LDFLAGS) -o /tmp/test_session_table src/test_session_table.c src/session_table.c
 	/tmp/test_session_table
 
+test-morph: src/test_morph.c src/morph.c $(TEST_SRCS)
+	$(CC) $(TEST_CFLAGS) $(TEST_LDFLAGS) -lpthread -o /tmp/test_morph $^
+	/tmp/test_morph
+
 test-stress: src/test_stress.c build
 	$(CC) $(TEST_CFLAGS) $(TEST_LDFLAGS) -lpthread -o /tmp/test_stress src/test_stress.c
 	/tmp/test_stress
 
 test-integration: src/test_stress.c build
 	$(CC) $(TEST_CFLAGS) $(TEST_LDFLAGS) -lpthread -o /tmp/test_stress src/test_stress.c
-	AWG_STRESS_ONLY="client_burst,gateway_bidirectional,server_multiclient" /tmp/test_stress
+	AWG_STRESS_ONLY="client_burst,morph_chain_bidirectional,obfs_chain_bidirectional,gateway_bidirectional,server_multiclient" /tmp/test_stress
+
+test-morph-rollover: src/test_stress.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -DMORPH_SLOT_SEC=1 $(LDFLAGS) -o $(BUILD_DIR)/$(IMAGE_NAME)-morph-test $(SRCS)
+	$(CC) $(TEST_CFLAGS) $(TEST_LDFLAGS) -lpthread -o /tmp/test_stress src/test_stress.c
+	AWG_PROXY_BINARY="$(BUILD_DIR)/$(IMAGE_NAME)-morph-test" AWG_STRESS_ONLY="morph_slot_rollover" /tmp/test_stress
 
 test-net-addr-fuzz: src/test_net_addr_fuzz.c src/net_addr.c
 	$(CC) $(TEST_CFLAGS) $(TEST_LDFLAGS) -o /tmp/test_net_addr_fuzz src/test_net_addr_fuzz.c src/net_addr.c
@@ -205,14 +231,19 @@ test-cps-fuzz: src/test_cps_fuzz.c src/cps.c src/fastrand.c src/transform.h
 test-asan:
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
 	$(MAKE) CC="$(SANITIZER_CC)" TEST_CFLAGS="$(ASAN_TEST_CFLAGS)" TEST_LDFLAGS="$(ASAN_TEST_LDFLAGS)" \
-	test-blake2s test-transform test-config-runtime test-net-addr test-session-table test-curve25519
+	test-blake2s test-transform test-config-runtime test-net-addr test-session-table test-curve25519 test-morph
 
 test-ubsan:
 	UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 	$(MAKE) CC="$(SANITIZER_CC)" TEST_CFLAGS="$(UBSAN_TEST_CFLAGS)" TEST_LDFLAGS="$(UBSAN_TEST_LDFLAGS)" \
-	test-blake2s test-transform test-config-runtime test-net-addr test-session-table test-curve25519
+	test-blake2s test-transform test-config-runtime test-net-addr test-session-table test-curve25519 test-morph
 
-test-hardening: test-net-addr-fuzz test-cps-fuzz test-asan test-ubsan test-integration
+test-tsan:
+	TSAN_OPTIONS=halt_on_error=1 \
+	$(MAKE) CC="$(SANITIZER_CC)" TEST_CFLAGS="$(TSAN_TEST_CFLAGS)" TEST_LDFLAGS="$(TSAN_TEST_LDFLAGS)" \
+	test-morph
+
+test-hardening: test-net-addr-fuzz test-cps-fuzz test-asan test-ubsan test-tsan test-integration test-morph-rollover
 	@echo "Hardening tests passed"
 
 .PHONY: release-notes

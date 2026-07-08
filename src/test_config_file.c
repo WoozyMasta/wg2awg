@@ -133,6 +133,40 @@ static void test_case_insensitive_keys(void) {
     ASSERT(strcmp(out.endpoint, "10.0.0.1:51820") == 0);
 }
 
+static void test_morph_key(void) {
+    const char *cfg_text =
+        "[Interface]\n"
+        "MorphKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n";
+    awg_file_config_t out;
+    ASSERT_EQ(parse_from_text(cfg_text, &out), 0);
+    ASSERT(out.have_morph_key);
+    for (int i = 0; i < 32; i++)
+        ASSERT_EQ(out.morph_key[i], 0);
+}
+
+static void test_invalid_morph_key(void) {
+    const char *cfg_text = "[Interface]\n"
+                           "MorphKey = invalid\n";
+    awg_file_config_t out;
+    ASSERT_EQ(parse_from_text(cfg_text, &out), -1);
+}
+
+static void test_obfs_profile(void) {
+    const char *cfg_text = "[Interface]\n"
+                           "ObfsProfile = dtls_record\n";
+    awg_file_config_t out;
+    ASSERT_EQ(parse_from_text(cfg_text, &out), 0);
+    ASSERT(out.have_obfs_profile);
+    ASSERT_EQ(out.obfs_profile, AWG_OBFS_DTLS_RECORD);
+}
+
+static void test_invalid_obfs_profile(void) {
+    const char *cfg_text = "[Interface]\n"
+                           "ObfsProfile = typo\n";
+    awg_file_config_t out;
+    ASSERT_EQ(parse_from_text(cfg_text, &out), -1);
+}
+
 static void test_invalid_listen_port(void) {
     const char *cfg_text = "[Interface]\n"
                            "ListenPort = 70000\n";
@@ -264,6 +298,10 @@ int main(void) {
     fprintf(stderr, "=== config file tests ===\n");
     RUN_TEST(parse_valid_full);
     RUN_TEST(case_insensitive_keys);
+    RUN_TEST(morph_key);
+    RUN_TEST(invalid_morph_key);
+    RUN_TEST(obfs_profile);
+    RUN_TEST(invalid_obfs_profile);
     RUN_TEST(invalid_listen_port);
     RUN_TEST(invalid_private_key_base64);
     RUN_TEST(inline_comments_are_ignored);

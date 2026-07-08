@@ -1,5 +1,6 @@
 #include "proxy_c2s_gateway.h"
 #include "proxy_io_batch.h"
+#include "morph.h"
 #include "log.h"
 #include "obfs.h"
 #include <string.h>
@@ -102,7 +103,8 @@ void *proxy_c2s_thread_gateway(
                     obfs_rx = &entry->obfs_c2s;
             }
 
-            if (n >= s4 + WG_TRANSPORT_MIN) {
+            if (cfg->obfs_profile == AWG_OBFS_OFF &&
+                n >= s4 + WG_TRANSPORT_MIN) {
                 if (!cfg->transport_size_ambiguous ||
                     (n != cfg->init_total && n != cfg->resp_total &&
                      n != cfg->cookie_total)) {
@@ -127,10 +129,17 @@ void *proxy_c2s_thread_gateway(
 
             int unwrapped_len = 0;
             int marker_seen_before = obfs_rx->marker_seen;
+            uint8_t marker_window_before = obfs_rx->marker_rx_window;
             uint8_t *unwrapped = obfs_unwrap(obfs_rx, pkt, n, &unwrapped_len);
             if (!unwrapped) {
-                if (!marker_seen_before)
+                if (!marker_seen_before && !obfs_rx->marker_seen) {
+                    if (obfs_rx->marker_rx_window == marker_window_before &&
+                        obfs_rx->marker_rx_window > 0)
+                        obfs_rx->marker_rx_window--;
                     log_marker_reject_once(obfs_rx, "c2s");
+                    if (obfs_rx->marker_rx_window > 0)
+                        continue;
+                }
                 p->obfs_fail_c2s++;
                 if (should_log_obfs_fail(p->obfs_fail_c2s)) {
                     char cb[12];
@@ -140,7 +149,7 @@ void *proxy_c2s_thread_gateway(
                         " profile=", obfs_profile_name(cfg->obfs_profile),
                         " (remote likely plain AWG/WG or different obfs "
                         "preset)"};
-                    log_msgn("ERROR: ", parts, 6);
+                    log_msgn("ERROR: ", parts, 5);
                 }
                 continue;
             }
@@ -148,8 +157,13 @@ void *proxy_c2s_thread_gateway(
                 log_marker_accept_once(obfs_rx, "c2s");
 
             int out_len;
-            uint8_t *out =
-                transform_inbound(unwrapped, unwrapped_len, cfg, &out_len);
+            uint8_t *out;
+            if (cfg->morph_enabled)
+                out = morph_transform_inbound(&p->morph, unwrapped,
+                                              unwrapped_len, &out_len);
+            else
+                out =
+                    transform_inbound(unwrapped, unwrapped_len, cfg, &out_len);
             if (!out)
                 continue;
 

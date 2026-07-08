@@ -579,6 +579,134 @@ static void test_apply_file_obfuscation_overrides(void) {
     ASSERT_EQ(cfg.h3.max, 301u);
 }
 
+static void unset_morph_env(void) {
+    unsetenv("AWG_MORPH_KEY");
+    unsetenv("AWG_MORPH_KEY_FILE");
+}
+
+static void test_load_morph_key_env(void) {
+    awg_config_t cfg;
+    const char *err = NULL;
+    memset(&cfg, 0, sizeof(cfg));
+    unset_morph_env();
+
+    ASSERT_EQ(setenv("AWG_MORPH_KEY",
+                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", 1),
+              0);
+    ASSERT_EQ(load_morph_key_env(&cfg, &err), 1);
+    ASSERT(cfg.morph_enabled);
+    for (int i = 0; i < 32; i++)
+        ASSERT_EQ(cfg.morph_key[i], 0);
+
+    memset(&cfg, 0, sizeof(cfg));
+    ASSERT_EQ(setenv("AWG_MORPH_KEY",
+                     "000102030405060708090a0b0c0d0e0f"
+                     "101112131415161718191a1b1c1d1e1f",
+                     1),
+              0);
+    ASSERT_EQ(load_morph_key_env(&cfg, &err), 1);
+    for (int i = 0; i < 32; i++)
+        ASSERT_EQ(cfg.morph_key[i], (uint8_t)i);
+
+    memset(&cfg, 0, sizeof(cfg));
+    ASSERT_EQ(setenv("AWG_MORPH_KEY", "invalid", 1), 0);
+    ASSERT_EQ(load_morph_key_env(&cfg, &err), -1);
+    ASSERT(err != NULL);
+    unset_morph_env();
+}
+
+static void test_load_morph_key_file_precedence(void) {
+    char path[] = "/tmp/morph-keyXXXXXX";
+    int fd = mkstemp(path);
+    ASSERT(fd >= 0);
+    const char *file_key = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n";
+    ASSERT_EQ(write(fd, file_key, strlen(file_key)), (ssize_t)strlen(file_key));
+    ASSERT_EQ(close(fd), 0);
+
+    awg_config_t cfg;
+    const char *err = NULL;
+    memset(&cfg, 0, sizeof(cfg));
+    unset_morph_env();
+    ASSERT_EQ(setenv("AWG_MORPH_KEY",
+                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", 1),
+              0);
+    ASSERT_EQ(setenv("AWG_MORPH_KEY_FILE", path, 1), 0);
+    ASSERT_EQ(load_morph_key_env(&cfg, &err), 1);
+    for (int i = 0; i < 32; i++)
+        ASSERT_EQ(cfg.morph_key[i], 1);
+
+    unlink(path);
+    unset_morph_env();
+}
+
+static void test_apply_file_morph_override(void) {
+    awg_config_t cfg;
+    awg_file_config_t fc;
+    memset(&cfg, 0, sizeof(cfg));
+    memset(&fc, 0, sizeof(fc));
+    memset(cfg.morph_key, 0xaa, sizeof(cfg.morph_key));
+    for (int i = 0; i < 32; i++)
+        fc.morph_key[i] = (uint8_t)i;
+    fc.have_morph_key = 1;
+
+    apply_file_morph_override(&cfg, &fc);
+    ASSERT(cfg.morph_enabled);
+    for (int i = 0; i < 32; i++)
+        ASSERT_EQ(cfg.morph_key[i], (uint8_t)i);
+}
+
+static void test_morph_key_config_precedence(void) {
+    awg_config_t cfg;
+    awg_file_config_t fc;
+    const char *err = NULL;
+    memset(&cfg, 0, sizeof(cfg));
+    memset(&fc, 0, sizeof(fc));
+    unset_morph_env();
+
+    ASSERT_EQ(setenv("AWG_MORPH_KEY",
+                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", 1),
+              0);
+    ASSERT_EQ(load_morph_key_env(&cfg, &err), 1);
+    memset(fc.morph_key, 2, sizeof(fc.morph_key));
+    fc.have_morph_key = 1;
+    apply_file_morph_override(&cfg, &fc);
+    for (int i = 0; i < 32; i++)
+        ASSERT_EQ(cfg.morph_key[i], 2);
+    unset_morph_env();
+}
+
+static void test_morph_obfuscation_env_conflicts(void) {
+    static const char *const envs[] = {
+        "AWG_JC", "AWG_JMIN", "AWG_JMAX", "AWG_S1", "AWG_S2", "AWG_S3",
+        "AWG_S4", "AWG_H1",   "AWG_H2",   "AWG_H3", "AWG_H4",
+    };
+    for (size_t i = 0; i < sizeof(envs) / sizeof(envs[0]); i++)
+        unsetenv(envs[i]);
+    for (size_t i = 0; i < sizeof(envs) / sizeof(envs[0]); i++) {
+        ASSERT_EQ(setenv(envs[i], "1", 1), 0);
+        ASSERT(morph_obfuscation_env_conflict());
+        unsetenv(envs[i]);
+    }
+    ASSERT(!morph_obfuscation_env_conflict());
+}
+
+static void test_morph_obfuscation_file_conflicts(void) {
+    awg_file_config_t fc;
+    memset(&fc, 0, sizeof(fc));
+    ASSERT(!morph_obfuscation_file_conflict(&fc));
+
+    int *flags[] = {
+        &fc.have_jc, &fc.have_jmin, &fc.have_jmax, &fc.have_s1,
+        &fc.have_s2, &fc.have_s3,   &fc.have_s4,   &fc.have_h1,
+        &fc.have_h2, &fc.have_h3,   &fc.have_h4,
+    };
+    for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+        *flags[i] = 1;
+        ASSERT(morph_obfuscation_file_conflict(&fc));
+        *flags[i] = 0;
+    }
+}
+
 static void test_load_obfs_profile_env_default_off(void) {
     awg_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -614,6 +742,19 @@ static void test_load_obfs_profile_env_unknown_is_off(void) {
     ASSERT_EQ(setenv("AWG_OBFS_PROFILE", "unknown_profile", 1), 0);
     ASSERT_EQ(load_obfs_profile_env(&cfg), 0);
     ASSERT_EQ(cfg.obfs_profile, AWG_OBFS_OFF);
+}
+
+static void test_apply_file_obfs_profile_override(void) {
+    awg_config_t cfg;
+    awg_file_config_t fc;
+    memset(&cfg, 0, sizeof(cfg));
+    memset(&fc, 0, sizeof(fc));
+    cfg.obfs_profile = AWG_OBFS_STUN_ICE;
+    fc.have_obfs_profile = 1;
+    fc.obfs_profile = AWG_OBFS_GAME_KCP;
+
+    apply_file_obfs_profile_override(&cfg, &fc);
+    ASSERT_EQ(cfg.obfs_profile, AWG_OBFS_GAME_KCP);
 }
 
 int main(void) {
@@ -657,8 +798,15 @@ int main(void) {
     RUN_TEST(select_dns_value_file_priority);
     RUN_TEST(select_dns_value_none);
     RUN_TEST(apply_file_obfuscation_overrides);
+    RUN_TEST(load_morph_key_env);
+    RUN_TEST(load_morph_key_file_precedence);
+    RUN_TEST(apply_file_morph_override);
+    RUN_TEST(morph_key_config_precedence);
+    RUN_TEST(morph_obfuscation_env_conflicts);
+    RUN_TEST(morph_obfuscation_file_conflicts);
     RUN_TEST(load_obfs_profile_env_default_off);
     RUN_TEST(load_obfs_profile_env_known_values);
     RUN_TEST(load_obfs_profile_env_unknown_is_off);
+    RUN_TEST(apply_file_obfs_profile_override);
     TEST_MAIN_END();
 }

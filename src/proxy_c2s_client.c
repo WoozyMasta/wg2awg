@@ -1,6 +1,7 @@
 #include "proxy_c2s_client.h"
 #include "proxy_emit.h"
 #include "proxy_io_batch.h"
+#include "morph.h"
 #include "log.h"
 #include "net_addr.h"
 #include "obfs.h"
@@ -9,6 +10,14 @@
 static int obfs_max_packet_len(proxy_t *p) {
     return BUF_SIZE + AWG_PACKET_HEADROOM -
            obfs_profile_overhead_max(p->cfg->obfs_profile);
+}
+
+static uint8_t *wrap_for_batch(obfs_session_t *s, uint8_t *in, int in_len,
+                               uint8_t *stable_buf, int stable_cap,
+                               int *out_len) {
+    if (s->profile == AWG_OBFS_OFF)
+        return obfs_wrap(s, in, in_len, out_len);
+    return obfs_wrap_to(s, in, in_len, stable_buf, stable_cap, out_len);
 }
 
 static void log_marker_sent_once(obfs_session_t *s, const char *side) {
@@ -160,8 +169,17 @@ void *proxy_c2s_thread_client(
                     }
                     int total = prefix > 0 ? prefix + n : n;
                     uint8_t *base = prefix > 0 ? p->recv_c2s.bufs[i] : data;
-                    p->send_c2s.iovecs[nsend].iov_base = base;
-                    p->send_c2s.iovecs[nsend].iov_len = total;
+                    if (total > max_obfs_in)
+                        continue;
+                    int wrapped_len = 0;
+                    uint8_t *wrapped = wrap_for_batch(
+                        &p->obfs_c2s, base, total, p->send_c2s.bufs[nsend],
+                        (int)sizeof(p->send_c2s.bufs[nsend]), &wrapped_len);
+                    if (!wrapped)
+                        continue;
+                    log_marker_sent_once(&p->obfs_c2s, "c2s");
+                    p->send_c2s.iovecs[nsend].iov_base = wrapped;
+                    p->send_c2s.iovecs[nsend].iov_len = wrapped_len;
                     nsend++;
                     if (!atomic_exchange_explicit(&p->fe_transport_c2s, 1,
                                                   memory_order_relaxed))
@@ -190,14 +208,26 @@ void *proxy_c2s_thread_client(
                 }
             }
 
+            /* In morph mode use the current-slot profile cfg for handshakes. */
+            const awg_config_t *tx_cfg = cfg;
+            int morph_idx = -1;
+            if (cfg->morph_enabled) {
+                morph_idx = morph_snapshot_acquire(&p->morph);
+                tx_cfg = &p->morph.snap[morph_idx].cfgs[1];
+            }
+
             int out_len, sendJunk;
             uint8_t *out =
-                transform_outbound(p->recv_c2s.bufs[i], prefix, n, cfg,
+                transform_outbound(p->recv_c2s.bufs[i], prefix, n, tx_cfg,
                                    fastrand_u64(&p->rng), &out_len, &sendJunk);
 
             if (sendJunk) {
                 log_debug("c2s: handshake init, sending junk");
                 proxy_emit_send_junk_and_cps(p, remote_fd);
+                if (cfg->morph_enabled)
+                    proxy_emit_send_junk_cfg(p, remote_fd, tx_cfg);
+                if (morph_idx >= 0)
+                    morph_snapshot_release(&p->morph, morph_idx);
                 int wrapped_len = 0;
                 if (out_len > max_obfs_in)
                     continue;
@@ -217,12 +247,15 @@ void *proxy_c2s_thread_client(
                 }
                 continue;
             }
+            if (morph_idx >= 0)
+                morph_snapshot_release(&p->morph, morph_idx);
 
             int wrapped_len = 0;
             if (out_len > max_obfs_in)
                 continue;
-            uint8_t *wrapped =
-                obfs_wrap(&p->obfs_c2s, out, out_len, &wrapped_len);
+            uint8_t *wrapped = wrap_for_batch(
+                &p->obfs_c2s, out, out_len, p->send_c2s.bufs[nsend],
+                (int)sizeof(p->send_c2s.bufs[nsend]), &wrapped_len);
             if (!wrapped)
                 continue;
             log_marker_sent_once(&p->obfs_c2s, "c2s");

@@ -28,12 +28,15 @@ typedef struct {
 } obfs_session_t;
 
 awg_obfs_profile_t parse_obfs_profile(const char *s);
+int parse_obfs_profile_strict(const char *s, awg_obfs_profile_t *out);
 const char *obfs_profile_name(awg_obfs_profile_t profile);
 
 void obfs_session_init(obfs_session_t *s, awg_obfs_profile_t profile,
                        uint64_t seed);
 
 uint8_t *obfs_wrap(obfs_session_t *s, uint8_t *in, int in_len, int *out_len);
+uint8_t *obfs_wrap_to(obfs_session_t *s, uint8_t *in, int in_len, uint8_t *out,
+                      int out_cap, int *out_len);
 uint8_t *obfs_unwrap(obfs_session_t *s, uint8_t *in, int in_len, int *out_len);
 int obfs_profile_overhead_max(awg_obfs_profile_t profile);
 

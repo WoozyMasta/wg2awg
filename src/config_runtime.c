@@ -36,6 +36,18 @@ static int streqi(const char *a, const char *b) {
     return *a == '\0' && *b == '\0';
 }
 
+static int parse_hex_byte(char hi, char lo) {
+    int a = (hi >= '0' && hi <= '9')   ? hi - '0'
+            : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+            : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10
+                                       : -1;
+    int b = (lo >= '0' && lo <= '9')   ? lo - '0'
+            : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+            : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10
+                                       : -1;
+    return (a < 0 || b < 0) ? -1 : (a << 4) | b;
+}
+
 int parse_awg_mode(const char *s, int *mode_out) {
     if (!s || !s[0] || !mode_out)
         return -1;
@@ -556,6 +568,13 @@ int load_obfs_profile_env(awg_config_t *cfg) {
     return 0;
 }
 
+void apply_file_obfs_profile_override(awg_config_t *cfg,
+                                      const awg_file_config_t *file_cfg) {
+    if (!cfg || !file_cfg || !file_cfg->have_obfs_profile)
+        return;
+    cfg->obfs_profile = file_cfg->obfs_profile;
+}
+
 int load_cps_env(awg_config_t *cfg, cps_template_t storage[5],
                  const char **err_msg) {
     const char *inames[] = {"AWG_I1", "AWG_I2", "AWG_I3", "AWG_I4", "AWG_I5"};
@@ -616,6 +635,103 @@ const char *select_dns_value(const char *env_dns, const char *file_dns,
     if (env_dns && env_dns[0])
         return env_dns;
     return NULL;
+}
+
+int load_morph_key_env(awg_config_t *cfg, const char **err_msg) {
+    if (!cfg)
+        return -1;
+
+    const char *key_file = getenv("AWG_MORPH_KEY_FILE");
+    if (key_file && key_file[0]) {
+        FILE *f = fopen(key_file, "r");
+        if (!f) {
+            if (err_msg)
+                *err_msg = "AWG_MORPH_KEY_FILE: cannot open file";
+            return -1;
+        }
+        char buf[64];
+        if (!fgets(buf, sizeof(buf), f)) {
+            fclose(f);
+            if (err_msg)
+                *err_msg = "AWG_MORPH_KEY_FILE: cannot read key";
+            return -1;
+        }
+        fclose(f);
+        int len = (int)strlen(buf);
+        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' ||
+                           buf[len - 1] == ' ' || buf[len - 1] == '\t'))
+            buf[--len] = '\0';
+        if (base64_decode(buf, (size_t)len, cfg->morph_key, 32) != 32) {
+            if (err_msg)
+                *err_msg =
+                    "AWG_MORPH_KEY_FILE: invalid base64 key (must be 32 bytes)";
+            return -1;
+        }
+        cfg->morph_enabled = 1;
+        return 1;
+    }
+
+    const char *key_inline = getenv("AWG_MORPH_KEY");
+    if (key_inline && key_inline[0]) {
+        size_t len = strlen(key_inline);
+        int valid = 0;
+        if (len == 44) {
+            valid = base64_decode(key_inline, len, cfg->morph_key, 32) == 32;
+        } else if (len == 64) {
+            valid = 1;
+            for (size_t i = 0; i < 32; i++) {
+                int byte =
+                    parse_hex_byte(key_inline[i * 2], key_inline[i * 2 + 1]);
+                if (byte < 0) {
+                    valid = 0;
+                    break;
+                }
+                cfg->morph_key[i] = (uint8_t)byte;
+            }
+        }
+        if (!valid) {
+            if (err_msg)
+                *err_msg = "AWG_MORPH_KEY: expected 44-char base64 or "
+                           "64-char hex key";
+            return -1;
+        }
+        cfg->morph_enabled = 1;
+        return 1;
+    }
+
+    return 0;
+}
+
+void apply_file_morph_override(awg_config_t *cfg,
+                               const awg_file_config_t *file_cfg) {
+    if (!cfg || !file_cfg)
+        return;
+    if (file_cfg->have_morph_key) {
+        memcpy(cfg->morph_key, file_cfg->morph_key, 32);
+        cfg->morph_enabled = 1;
+    }
+}
+
+int morph_obfuscation_env_conflict(void) {
+    static const char *const envs[] = {
+        "AWG_JC", "AWG_JMIN", "AWG_JMAX", "AWG_S1", "AWG_S2", "AWG_S3",
+        "AWG_S4", "AWG_H1",   "AWG_H2",   "AWG_H3", "AWG_H4",
+    };
+    for (size_t i = 0; i < sizeof(envs) / sizeof(envs[0]); i++) {
+        const char *v = getenv(envs[i]);
+        if (v && v[0])
+            return 1;
+    }
+    return 0;
+}
+
+int morph_obfuscation_file_conflict(const awg_file_config_t *file_cfg) {
+    if (!file_cfg)
+        return 0;
+    return file_cfg->have_jc || file_cfg->have_jmin || file_cfg->have_jmax ||
+           file_cfg->have_s1 || file_cfg->have_s2 || file_cfg->have_s3 ||
+           file_cfg->have_s4 || file_cfg->have_h1 || file_cfg->have_h2 ||
+           file_cfg->have_h3 || file_cfg->have_h4;
 }
 
 void apply_file_obfuscation_overrides(awg_config_t *cfg,
