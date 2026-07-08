@@ -156,8 +156,7 @@ static void test_clock_skew_boundaries(void) {
         for (size_t si = 0; si < sizeof(skews) / sizeof(skews[0]); si++) {
             int64_t sender_time =
                 (int64_t)(recv_slot * MORPH_SLOT_SEC) + t + skews[si];
-            uint64_t sender_slot =
-                (uint64_t)(sender_time / MORPH_SLOT_SEC);
+            uint64_t sender_slot = (uint64_t)(sender_time / MORPH_SLOT_SEC);
             int64_t delta = (int64_t)sender_slot - (int64_t)recv_slot;
             int should_accept = delta >= -2 && delta <= 2;
 
@@ -187,8 +186,8 @@ static void test_clock_skew_boundaries(void) {
                                    0x12345678, &encoded_len, &send_junk);
 
             int decoded_len = 0;
-            uint8_t *decoded =
-                morph_transform_inbound(&ms, encoded, encoded_len, &decoded_len);
+            uint8_t *decoded = morph_transform_inbound(
+                &ms, encoded, encoded_len, &decoded_len);
 
             if (should_accept) {
                 ASSERT(decoded != NULL);
@@ -276,9 +275,10 @@ static void *read_thread(void *arg) {
         const morph_snapshot_t *s = &ctx->ms.snap[idx];
         int invalid = 0;
         for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
-            uint64_t expect = (offset[i] < 0 && s->slot < (uint64_t)(-offset[i]))
-                                  ? 0
-                                  : s->slot + (uint64_t)offset[i];
+            uint64_t expect =
+                (offset[i] < 0 && s->slot < (uint64_t)(-offset[i]))
+                    ? 0
+                    : s->slot + (uint64_t)offset[i];
             if (s->profiles[i].slot != expect)
                 invalid = 1;
         }

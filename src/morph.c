@@ -176,8 +176,7 @@ void morph_derive_profile(morph_profile_t *out,
 /* Derive the 5 profiles/configs (current +/- 2 slots) for a snapshot,
  * clamping slot numbers below 0 to 0 (uint64_t, so avoid underflow). */
 static void derive_snapshot(morph_snapshot_t *s, const awg_config_t *base_cfg,
-                            const uint8_t key[MORPH_KEY_LEN],
-                            uint64_t slot) {
+                            const uint8_t key[MORPH_KEY_LEN], uint64_t slot) {
     static const int offset[MORPH_NUM_SLOTS] = {-2, -1, 0, 1, 2};
     s->slot = slot;
     for (int i = 0; i < MORPH_NUM_SLOTS; i++) {
