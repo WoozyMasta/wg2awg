@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning][].
 ### Removed
 -->
 
-## Unreleased
+## [0.5.0][] - 2026-07-13
 
 ### Added
 
@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning][].
 * `obfs dns_like`: extra trailing bytes were appended to the wrapped packet but
   not tracked, so unwrap returned a payload that was too long; WireGuard
   rejected the oversized handshake.
+
+[0.5.0]: https://github.com/WoozyMasta/wg2awg/compare/0.4.0...0.5.0
 
 ## [0.4.0][] - 2026-06-15
 
